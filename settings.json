@@ -1,0 +1,247 @@
+{
+  "syncClaudeAiSkills": false,
+  "syncClaudeAiPlugins": false,
+  "permissions": {
+    "allow": [
+      "Bash(bash ~/.claude/skills/feature-flow/verify-untouched.sh *)",
+      "Bash(bash ~/.claude/skills/new-worktree/new-worktree.sh *)",
+      "Bash(bash ~/.claude/skills/finish-worktree/finish-worktree.sh *)"
+    ],
+    "deny": [
+      "Edit(~/.claude/agents/**)",
+      "Edit(~/.claude/settings.json)",
+      "Edit(~/.claude/hooks/**)",
+      "Edit(//mnt/**)",
+      "Edit(//etc/**)",
+      "Edit(./.claude/settings.json)",
+      "Edit(./.claude/settings.local.json)",
+      "Edit(./.mcp.json)",
+      "Edit(./.hook-only/**)",
+      "Edit(./.claude/agents/**)",
+      "Read(./.hook-only/hook-read-only/**)",
+      "mcp__*"
+    ],
+    "ask": [
+      "WebFetch",
+      "WebSearch"
+    ],
+    "defaultMode": "auto",
+    "disableBypassPermissionsMode": "disable",
+    "blockReadsOutsideWorkingDirectories": true,
+    "additionalDirectories": [
+      "../worktrees/"
+    ],
+    "useAutoModeDuringPlan": false,
+    "_commented_disableAutoMode": "disable"
+  },
+  "model": "opus",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/block-write-outside-project.py",
+            "onFailure": "block"
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep|Glob|Edit|Write|NotebookEdit|Agent|Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/plan-guard.py"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/agent-guard.py"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/subagent-budget.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/fetch-origin.py"
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/worker-budget.py"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/agent-guard.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/subagent-budget.py"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/agent-guard.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/subagent-cost.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/subagent-budget.py"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/fetch-origin.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/worker-control.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/finish-worktree.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/merge-origin.py"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/skills/repo-plan/repo-check.py --hook"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/session-mark.py"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/session-mark.py"
+          }
+        ]
+      }
+    ]
+  },
+  "worktree": {
+    "bgIsolation": "none"
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "network": {
+      "allowedDomains": [
+        "github.com",
+        "api.github.com"
+      ],
+      "strictAllowlist": false
+    },
+    "filesystem": {
+      "allowWrite": [
+        "~/.claude/docs",
+        "~/go",
+        "~/.cache/go-build",
+        "~/.cache/uv"
+      ],
+      "denyWrite": [
+        "/mnt",
+        "~/**/plans",
+        "~/godot",
+        "~/**/.hook-only"
+      ],
+      "denyRead": [
+        "/mnt",
+        "/run/user/1000",
+        "/run/WSL",
+        "~/**/plans",
+        "~/**/.hook-only/hook-read-only"
+      ],
+      "allowRead": [
+        "~/.gitconfig",
+        "~/.config/git/ignore",
+        "~/.claude/docs",
+        "~/godot",
+        "~/.claude/templates",
+        "~/.claude/README.md",
+        "~/go",
+        "~/.cache/go-build",
+        "~/.local/bin",
+        "~/.cache/uv"
+      ]
+    }
+  },
+  "effortLevel": "medium",
+  "maxEffortLevel": "medium",
+  "autoMode": {
+    "hard_deny": [
+      "$defaults",
+      "Per-Command Network Hosts: block any shell command (Bash, PowerShell, Monitor) whose tool input includes a non-empty `allowed_domains` field, regardless of the host (including package registries, the git remote host, or hosts the user mentioned in chat); the Command Network Lists exemptions do not apply. Hostnames that merely appear in the command text (e.g. a `curl` URL) are not a match, and an empty `allowed_domains` is not a match. Non-shell tools (WebFetch, MCP) are intentionally out of scope. Network access must come only from the sandbox `allowedDomains` in settings; the block reason should tell the user to add the host there rather than approving it per command."
+    ]
+  },
+  "feedbackDrafts": "off"
+}

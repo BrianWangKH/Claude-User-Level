@@ -1,0 +1,6 @@
+{
+  "_comment": "Copy to <repo>/.claude/guard-paths.json. tests: test code, developer must not touch. qaConfig: test-runner config, same rule. shared: either may change, reminder only. Without this file only git refs are checked.",
+  "tests": [],
+  "qaConfig": [],
+  "shared": []
+}

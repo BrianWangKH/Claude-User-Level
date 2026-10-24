@@ -1,0 +1,15 @@
+# Whitelist: ignore everything, then allow config only
+/*
+!/.gitignore
+!/CLAUDE.md
+!/settings.json
+!/agents/
+!/skills/
+!/hooks/
+!/commands/
+!/docs/
+!/templates/
+__pycache__/
+/skills/synced/
+/skills/.trash/
+!/README.md

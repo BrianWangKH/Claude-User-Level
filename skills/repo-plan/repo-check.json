@@ -1,0 +1,15 @@
+{
+  "_comment": "Checks run by repo-check.py. Add one entry per check. kickoff: true means a missing item marks the repo as never set up.",
+  "checks": [
+    {"id": "project-claude-md", "type": "exists", "path": "CLAUDE.md", "kickoff": true,
+     "hint": "no project CLAUDE.md (environment, conventions, scope table)"},
+    {"id": "scope-table", "type": "grep", "path": "CLAUDE.md", "pattern": "^#+ .*(Branch 範圍|範圍表)", "kickoff": true,
+     "hint": "project CLAUDE.md has no branch scope table (heading 'Branch 範圍'); branch names need it"},
+    {"id": "plans-ignored", "type": "ignored", "path": "plans/",
+     "hint": "plans/ is not in the repo's .gitignore"},
+    {"id": "project-flow", "type": "exists", "path": ".claude/skills/project-flow/SKILL.md",
+     "hint": "no project-flow skill (test command, done checks)"},
+    {"id": "guard-paths", "type": "exists", "path": ".claude/guard-paths.json",
+     "hint": "no .claude/guard-paths.json; agent-guard checks only git refs (template: ~/.claude/templates/guard-paths.json)"}
+  ]
+}

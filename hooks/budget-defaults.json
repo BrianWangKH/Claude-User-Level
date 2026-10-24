@@ -1,0 +1,10 @@
+{
+  "_note": "Fallback time budgets in minutes, used only when the orchestrator wrote no plans/budget/<agent_type>.json. Only these agent types are budgeted.",
+  "minutes": {
+    "qa-planner": 15,
+    "spec-reviewer": 8,
+    "qa": 30,
+    "developer": 30,
+    "code-reviewer": 30
+  }
+}
