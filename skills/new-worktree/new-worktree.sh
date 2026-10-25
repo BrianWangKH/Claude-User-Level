@@ -49,6 +49,10 @@ git rev-parse --verify --quiet "refs/remotes/origin/${branch}" >/dev/null && fai
 # and writing the upstream needs .git/config, which the sandbox blocks).
 git worktree add --quiet --no-track -b "${branch}" "${path}" "${base}" || fail "git worktree add failed";
 
+# The worktree session can't read the main checkout: give it a copy of the cost history for its
+# estimates (cost-history.py estimate agent).
+python3 ~/.claude/skills/repo-plan/cost-history.py snapshot "${path}" || fail "cost history copy failed";
+
 echo "OK: created ${branch} from ${base} ($(git rev-parse --short "${base}"))";
 echo "worktree: ${path}";
 echo "plan:     ${path}/plans/${topic}.md";

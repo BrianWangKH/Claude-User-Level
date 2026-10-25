@@ -1,16 +1,19 @@
 """Budget guard for flow subagents (SubagentStart + PreToolUse).
 
-SubagentStart: claim the budget the orchestrator wrote to <repo>/plans/budget/<agent_type>.json
-  ({"minutes": N, "tokens": M, "phase": "checkpoint" | "full"}; tokens and phase optional), delete
-  that file so the next dispatch must write a fresh one, and store the budget with the start time
-  under <checkout>/.hook-only/budget/<agent_id>.json (agents can read it but not edit it; see
-  hookonly.py).
-  No budget file: fall back to the time-only default in budget-defaults.json. A resume fires
+SubagentStart: claim the budget dispatch-guard.py parsed from the dispatch prompt's `Budget:` line:
+  <checkout>/.hook-only/budget/pending-<agent_id>.json (a SendMessage resume), else
+  pending-<agent_type>.json ({"minutes": N, "usd": U, "phase": "checkpoint" | "full"}; usd optional),
+  delete it so the next dispatch must bring a fresh one, and store the budget with the start time
+  under .hook-only/budget/<agent_id>.json (agents can read it but not edit it; see hookonly.py).
+  No pending budget: fall back to the time-only default in budget-defaults.json. A resume fires
   SubagentStart again, so every round is claimed and timed anew.
 PreToolUse (subagents only): deny the tool call once the round has used
-  - 80% of its time or tokens while phase is "checkpoint" -> stop and report CHECKPOINT
+  - 80% of its time, USD or tokens while phase is "checkpoint" -> stop and report CHECKPOINT
   - 100% in any phase -> stop and report
-  Reporting is plain text, so a denied agent can still hand back.
+  SubagentHandback (the tool a background subagent returns its report with) is always allowed: it
+  is the way out, and denying it only makes the agent retry and burn requests (seen 2026-10-24: two
+  denied handbacks, then the agent ended its turn, SubagentStop deleted the state, and the third
+  handback passed only through the no-state branch below).
   No state for the agent (seen in practice: a resumed round's tool calls all got "no budget state";
   likely a late SubagentStop from the previous round deleting the new round's state): start a
   time-only default round instead of denying, so the round can still work and report.
@@ -19,9 +22,12 @@ Every event is appended to .hook-only/budget/events.jsonl to diagnose such cases
 SubagentStop: delete that agent's state (a resume claims a new one). SubagentStart also removes
   state files older than 7 days, left behind when a session died before SubagentStop.
 
-Tokens are weighted by price relative to plain input: cache reads cost a tenth, so a resumed agent
-re-reading its context doesn't burn its budget in a few requests. Override the weights with
-"token_weights" in budget-defaults.json.
+Tokens are weighted by price relative to plain input (tokenweights.py): cache reads cost a tenth, so
+a resumed agent re-reading its context doesn't burn its budget in a few requests. subagent-cost.py
+records the same weighted count, so estimates, budgets and actuals share one unit.
+USD, the preferred unit, is priced per model and cache TTL by prices.py (prices.json), the same
+pricing subagent-cost.py records as `usd`; requests of a model missing from prices.json are not
+counted and the deny message says how many.
 
 Only agent types listed in budget-defaults.json are budgeted. Fail-closed: any error while checking
 a budgeted agent denies the call with the error as the reason.
@@ -33,20 +39,17 @@ import sys
 import time
 
 import hookonly
+import prices
+import tokenweights
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULTS_FILE = os.environ.get("CLAUDE_BUDGET_DEFAULTS") or os.path.join(HERE, "budget-defaults.json")
-TOKEN_WEIGHTS = {
-	"input_tokens": 1.0,
-	"cache_creation_input_tokens": 1.25,
-	"cache_read_input_tokens": 0.1,
-	"output_tokens": 1.0,
-}
+DEFAULTS_FILE = tokenweights.DEFAULTS_FILE
+TOKEN_WEIGHTS = tokenweights.BASE
 STALE_SECONDS = 7 * 24 * 3600
+ALWAYS_ALLOWED = {"SubagentHandback"}
 
 
-def logEvent(data, note=""):
-	"""Append one line per event; never fails the hook."""
+def logEvent(data, note="", extra=None):
+	"""Append one line per event; never fails the hook. `extra` adds fields (the claimed budget)."""
 	try:
 		stateDir = stateDirFor(data)
 		os.makedirs(stateDir, exist_ok=True)
@@ -56,6 +59,7 @@ def logEvent(data, note=""):
 				"t": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": data.get("hook_event_name"),
 				"agent_id": data.get("agent_id"), "agent_type": data.get("agent_type"),
 				"tool": data.get("tool_name"), "state": os.path.isfile(stateFile), "note": note,
+				**(extra or {}),
 			}) + "\n")
 	except Exception:
 		pass
@@ -106,16 +110,40 @@ def tokensUsed(path, weights):
 			key = message.get("id") or entry.get("requestId") or entry.get("uuid")
 			if usage and key:
 				requests[key] = usage
-	return round(sum(int(u.get(k) or 0) * w for u in requests.values() for k, w in weights.items()))
+	return sum(tokenweights.weigh(u, weights) for u in requests.values())
+
+
+def usdUsed(path, table):
+	"""(USD of the subagent's requests so far, number of requests of an unpriced model)."""
+	requests = {}
+	with open(path, encoding="utf-8") as f:
+		for line in f:
+			try:
+				entry = json.loads(line)
+			except ValueError:
+				continue
+			if entry.get("type") != "assistant":
+				continue
+			message = entry.get("message") or {}
+			usage = message.get("usage")
+			key = message.get("id") or entry.get("requestId") or entry.get("uuid")
+			if usage and key:
+				requests[key] = (usage, message.get("model"))
+	costs = [prices.requestUsd(u, m, table) for u, m in requests.values()]
+	return sum(c for c in costs if c is not None), sum(1 for c in costs if c is None)
 
 
 def writeState(data, budget, weights):
 	agentId = data.get("agent_id") or ""
-	tokensAtStart = 0
+	tokensAtStart = usdAtStart = 0
 	transcript = subagentTranscript(data.get("transcript_path"), agentId)
-	if budget["tokens"] and transcript and os.path.isfile(transcript):
-		tokensAtStart = tokensUsed(transcript, weights)
-	budget.update({"agent_type": data.get("agent_type") or "", "started": time.time(), "tokens_at_start": tokensAtStart})
+	if transcript and os.path.isfile(transcript):
+		if budget["tokens"]:
+			tokensAtStart = tokensUsed(transcript, weights)
+		if budget.get("usd"):
+			usdAtStart = usdUsed(transcript, prices.load())[0]
+	budget.update({"agent_type": data.get("agent_type") or "", "started": time.time(),
+		"tokens_at_start": tokensAtStart, "usd_at_start": usdAtStart})
 	stateDir = stateDirFor(data)
 	os.makedirs(stateDir, exist_ok=True)
 	with open(os.path.join(stateDir, f"{agentId}.json"), "w", encoding="utf-8") as f:
@@ -128,18 +156,25 @@ def onStart(data, budgeted, weights):
 	if agentType not in budgeted or not agentId:
 		return
 	budget = {"minutes": budgeted[agentType], "tokens": None, "phase": "checkpoint", "source": "default"}
-	root = hookonly.projectRoot(data)
-	budgetFile = os.path.join(root, "plans", "budget", f"{agentType}.json")
-	if os.path.isfile(budgetFile):
+	stateDir = stateDirFor(data)
+	for key in (agentId, agentType):
+		budgetFile = os.path.join(stateDir, f"pending-{key}.json")
+		if not os.path.isfile(budgetFile):
+			continue
 		with open(budgetFile, encoding="utf-8") as f:
 			given = json.load(f)
 		budget = {
 			"minutes": float(given["minutes"]),
-			"tokens": int(given["tokens"]) if given.get("tokens") else None,
+			"tokens": None,
+			"usd": float(given["usd"]) if given.get("usd") else None,
 			"phase": given.get("phase") or "checkpoint",
-			"source": budgetFile,
+			"source": os.path.basename(budgetFile),
 		}
 		os.remove(budgetFile)
+		break
+	# cost-history.py rows reads these fields: the estimate side of the Cost table.
+	logEvent(data, "budget: " + budget["source"], {"budget_minutes": budget["minutes"],
+		"budget_usd": budget.get("usd"), "budget_source": budget["source"]})
 	writeState(data, budget, weights)
 
 
@@ -166,6 +201,15 @@ def onPreToolUse(data, budgeted, weights):
 			used = tokensUsed(transcript, weights) - int(budget.get("tokens_at_start") or 0)
 			ratio = max(ratio, used / budget["tokens"])
 			detail += f", {used} of {budget['tokens']} weighted tokens"
+	if budget.get("usd"):
+		transcript = subagentTranscript(data.get("transcript_path"), agentId)
+		if transcript and os.path.isfile(transcript):
+			spent, unpriced = usdUsed(transcript, prices.load())
+			used = spent - float(budget.get("usd_at_start") or 0)
+			ratio = max(ratio, used / budget["usd"])
+			detail += f", ${used:.2f} of ${budget['usd']:g}"
+			if unpriced:
+				detail += f" ({unpriced} requests of a model missing from prices.json not counted)"
 
 	if ratio >= 1:
 		deny(f"Budget used up ({detail}). Stop now and report: status CHECKPOINT, what is done, what you tried, what remains, what finishing would cost.", data)
@@ -222,6 +266,9 @@ def main():
 	elif event == "SubagentStop":
 		onStop(data)
 	elif event == "PreToolUse" and isSubagent:
+		if data.get("tool_name") in ALWAYS_ALLOWED:
+			logEvent(data, "allow: " + data.get("tool_name"))
+			return
 		try:
 			budgeted, weights = loadConfig()
 		except Exception as error:

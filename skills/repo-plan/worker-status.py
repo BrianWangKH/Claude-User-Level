@@ -9,7 +9,7 @@ Reads only what already exists; the worker writes nothing extra:
   - <worktree>/.hook-only/agent-guard/guard.log    one line per finished guarded round
   - <worktree>/.hook-only/cost/*.jsonl             tokens per finished round
   - git in the worktree                            commits since the base, uncommitted files
-The run's outcome is the `STATUS:` first line of the result file's `result` (skill repo-plan, "When it ends").
+A finished run's outcome: run-result.py.
 """
 import glob
 import json
@@ -95,12 +95,18 @@ def finished(hookOnly):
 
 
 def gitSummary(worktree):
-	base = git(worktree, "merge-base", "HEAD", "origin/HEAD") or git(worktree, "merge-base", "HEAD", "origin/master")
+	# origin/HEAD is often unset (remote added by hand), and the default branch may be main or
+	# master; without a base every branch looked like "0 commit(s)".
+	base = ""
+	for ref in ("origin/HEAD", "origin/main", "origin/master"):
+		base = git(worktree, "merge-base", "HEAD", ref)
+		if base:
+			break
 	commits = git(worktree, "log", "--format=%h %s", f"{base}..HEAD").splitlines() if base else []
 	status = git(worktree, "status", "--porcelain").splitlines()
 	modified = [l for l in status if not l.startswith("??")]
 	untracked = [l for l in status if l.startswith("??")]
-	text = f"git: {len(commits)} commit(s)"
+	text = f"git: {len(commits)} commit(s)" if base else "git: commits unknown (no origin/HEAD, origin/main or origin/master)"
 	if commits:
 		text += " (" + "; ".join(commits[:5]) + (" …" if len(commits) > 5 else "") + ")"
 	return [text + f" · {len(modified)} modified, {len(untracked)} untracked"]

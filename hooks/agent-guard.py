@@ -31,10 +31,17 @@ Files: only paths that are dirty at start or at stop are compared (status code +
 edits that were already there before the round (fix rounds) don't count as changes.
 
 PreToolUse, main session only:
-  - ALERT pending: deny that one call with the alert as the reason, then clear it.
+  - ALERT pending: deny that one call with the alert as the reason, move it to HOLD.
+  - HOLD present: deny every agent dispatch (Agent, Task, SendMessage) and every Bash `git commit`
+    or `git merge` with the held alert as the reason; other calls (reading, reporting) pass. Before
+    the hold, an ALERT blocked one call only, and the orchestrator committed right after it.
   - reminders pending: add them as additionalContext (no permission decision), then clear them.
   - Agent call spawning a fresh developer with a dirty working tree: add a warning. Resumes go
     through SendMessage, so fix rounds (dirty by design) are not checked.
+
+The hold ends when a person answers: UserPromptSubmit in an interactive session removes HOLD. In a
+headless worker (CLAUDE_WORKER_MINUTES set) the wrapper's own prompts don't count; worker-control.py
+removes the worktree's HOLD on `wt resume`, which the user types after deciding.
 
 State lives in <checkout>/.hook-only/agent-guard/ (see hookonly.py). Every checkout (main or
 worktree) has its own, so one worktree's ALERT is never consumed by another worktree's session.
@@ -45,6 +52,13 @@ Fail-closed: a failed snapshot is stored as an error and turns into an ALERT at 
 check at stop writes an ALERT with the error; if even that fails, print to stderr and exit 1
 (exit 2 on SubagentStop would keep the subagent running).
 Cleanup: snapshots older than 7 days and alerts older than 30 days are removed at SubagentStart.
+
+The snapshot is kept after SubagentStop, not deleted: a background subagent fires SubagentStop
+twice, once when its turn ends and again after it calls SubagentHandback. Deleting at the first
+stop made the second one report "no start snapshot" (seen 2026-10-25: qa clean at 01:42:37, ALERT
+at 01:42:46). The second stop compares against the same baseline; the next SubagentStart of that
+agent overwrites it. If a round's SubagentStart never fires, its stop compares against the previous
+round's snapshot, so changes made between rounds count as this round's: a false ALERT, never a miss.
 """
 import hashlib
 import json
@@ -60,6 +74,8 @@ GUARD_PATHS_FILE = os.path.join(".claude", "guard-paths.json")
 PROJECT_CONFIG_DIR = ".claude"
 MAIN_TYPES = {None, "claude"}
 SNAPSHOT_STALE_SECONDS = 7 * 24 * 3600
+DISPATCH_TOOLS = {"Agent", "Task", "SendMessage"}
+HELD_GIT = re.compile(r"\bgit\b[^|;&]*\b(commit|merge)\b")
 ALERT_STALE_SECONDS = 30 * 24 * 3600
 
 
@@ -246,9 +262,9 @@ def removeStale(directory):
 	now = time.time()
 	for entry in os.listdir(directory):
 		path = os.path.join(directory, entry)
-		limit = ALERT_STALE_SECONDS if entry in ("ALERT", "NOTICE") else SNAPSHOT_STALE_SECONDS
+		limit = ALERT_STALE_SECONDS if entry in ("ALERT", "NOTICE", "HOLD") else SNAPSHOT_STALE_SECONDS
 		try:
-			if (entry.endswith(".json") or entry in ("ALERT", "NOTICE")) and os.path.getmtime(path) < now - limit:
+			if (entry.endswith(".json") or entry in ("ALERT", "NOTICE", "HOLD")) and os.path.getmtime(path) < now - limit:
 				os.remove(path)
 		except OSError:
 			pass
@@ -281,7 +297,6 @@ def onStop(data, root, directory):
 			raise RuntimeError("no start snapshot (SubagentStart did not run or its state was removed)")
 		with open(stateFile, encoding="utf-8") as f:
 			before = json.load(f)
-		os.remove(stateFile)
 		if "error" in before:
 			raise RuntimeError(before["error"])
 		guardPaths = before["guard_paths"] if "guard_paths" in before else loadGuardPaths(root)
@@ -307,16 +322,34 @@ def takeFile(path):
 	return text
 
 
+def deny(reason):
+	print(json.dumps({"hookSpecificOutput": {
+		"hookEventName": "PreToolUse",
+		"permissionDecision": "deny",
+		"permissionDecisionReason": reason,
+	}}))
+
+
+def isHeld(data):
+	"""The calls a HOLD denies: agent dispatches and git commits or merges."""
+	tool = data.get("tool_name")
+	command = (data.get("tool_input") or {}).get("command") or ""
+	return tool in DISPATCH_TOOLS or (tool == "Bash" and HELD_GIT.search(command) is not None)
+
+
 def onMainPreToolUse(data, root, directory):
 	alert = takeFile(os.path.join(directory, "ALERT"))
 	notice = takeFile(os.path.join(directory, "NOTICE"))
+	holdFile = os.path.join(directory, "HOLD")
 	if alert:
+		append(holdFile, alert)
 		reason = alert + (f"\nAlso: {notice}" if notice else "")
-		print(json.dumps({"hookSpecificOutput": {
-			"hookEventName": "PreToolUse",
-			"permissionDecision": "deny",
-			"permissionDecisionReason": f"{reason}\nTell the user and stop before any other agent runs. (This call was blocked once; retry after reporting.)",
-		}}))
+		deny(f"{reason}\nTell the user and stop. Until the user answers, every agent dispatch and git commit or merge is denied; reading and reporting still work.")
+		return
+	if os.path.isfile(holdFile) and isHeld(data):
+		with open(holdFile, encoding="utf-8") as f:
+			held = f.read().strip()
+		deny(f"agent-guard hold, until the user answers: {held}\nReport the alert to the user (in a headless worker: end the run with `STATUS: blocked`, quoting it).")
 		return
 	context = []
 	if notice:
@@ -333,11 +366,22 @@ def onMainPreToolUse(data, root, directory):
 		}}))
 
 
+def onUserPrompt(directory):
+	"""A person answered: lift the hold. A headless worker's prompts come from its wrapper, not a
+	person; worker-control.py lifts its hold on `wt resume`."""
+	if os.environ.get("CLAUDE_WORKER_MINUTES"):
+		return
+	try:
+		os.remove(os.path.join(directory, "HOLD"))
+	except FileNotFoundError:
+		pass
+
+
 def main():
 	data = json.load(sys.stdin)
 	event = data.get("hook_event_name")
 	agentType = data.get("agent_type")
-	if event == "PreToolUse":
+	if event in ("PreToolUse", "UserPromptSubmit"):
 		if agentType not in MAIN_TYPES:
 			return
 	elif not roleOf(agentType) or not data.get("agent_id"):
@@ -352,6 +396,8 @@ def main():
 		onStop(data, root, directory)
 	elif event == "PreToolUse":
 		onMainPreToolUse(data, root, directory)
+	elif event == "UserPromptSubmit":
+		onUserPrompt(directory)
 
 
 if __name__ == "__main__":

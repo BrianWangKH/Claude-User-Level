@@ -1,0 +1,7 @@
+{
+  "_note": "USD per million tokens, Anthropic first-party list prices, read by prices.py. Input/output: claude-api skill model table (cached 2026-10-06). Cache writes: 5-minute 1.25x and 1-hour 2x input; cache reads 0.05x input on Opus/Sonnet 5.5 (https://platform.claude.com/docs/en/build-with-claude/prompt-caching). The skill's table lists Sonnet 5.5 cache reads at $0.20, but e2e-pipeline run 1's Sonnet costUSD ($2.9998: input 138, output 118464, 5m writes 465386, reads 6514551) matches $0.10 exactly, so $0.10 is used. Re-check against a result file's modelUsage costUSD when prices change. A model missing here is reported as unpriced, never counted as free.",
+  "models": {
+    "claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_write_5m": 5.0, "cache_write_1h": 8.0, "cache_read": 0.2},
+    "claude-sonnet-5-5": {"input": 2.0, "output": 10.0, "cache_write_5m": 2.5, "cache_write_1h": 4.0, "cache_read": 0.1}
+  }
+}

@@ -4,7 +4,7 @@ Started as `/feature-flow <topic> merge` in the topic's worktree, usually as a n
 
 ## Worker rules (always, even if the plan has no `## Worker 模式`)
 
-Wherever this file says to ask the user, or anything blocks you, end the run. Your last message starts with one line `STATUS: done`, `STATUS: needs-decision` or `STATUS: blocked` (format: skill `repo-plan`, "Worker"), in Traditional Chinese. Never guess, never work around a block, never push, never fetch.
+Wherever this file says to ask the user, or anything blocks you, end the run with a `STATUS:` line (the worker-stop hook gives the format). Never guess, never work around a block, never push, never fetch.
 
 ## Steps
 
@@ -22,5 +22,5 @@ Wherever this file says to ask the user, or anything blocks you, end the run. Yo
    Also look past textual conflicts: shared helpers, renamed APIs, numbering that both sides extend. Search for this branch's references into anything the other side renumbered or renamed.
 5. **Test.** Full suite (project `project-flow`). Failures route as usual (test-first.md): test problem → qa, implementation → developer. A failure that also fails on `origin/<default>` alone is pre-existing: TODO, not this merge's job.
 6. **Commit** the merge with explicit paths: `git add <resolved files>` then `git commit --no-edit` (keep git's merge message; append a short English summary of manual resolutions).
-7. **Review only what was hand-made.** If any hunk was resolved by hand (by you, qa or developer), run `code-reviewer` on that part only: give it `git diff HEAD^1 HEAD -- <hand-resolved files>` and the merge commit id; say which hunks were automatic. A fully automatic merge with green tests skips review.
+7. **Review only what was hand-made.** If any hunk was resolved by hand (by you, qa or developer), run `code-reviewer` on that part only: a prompt whose first line is `Merge review:` (so the hook keeps it), with `git diff HEAD^1 HEAD -- <hand-resolved files>`, the merge commit id, which hunks were automatic, and the `Budget:` line. A fully automatic merge with green tests skips review.
 8. **Wrap up.** Update `PR_DESCRIPTION.md` (a "Merged <default> at <sha>" note and any renumbering), add `## Cost` / `## Friction` rows, end with `STATUS: done` and the push command (a normal push, never `--force`).

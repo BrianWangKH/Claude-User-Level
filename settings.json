@@ -3,9 +3,14 @@
   "syncClaudeAiPlugins": false,
   "permissions": {
     "allow": [
+      "Edit(./plans/tests/**)",
       "Bash(bash ~/.claude/skills/feature-flow/verify-untouched.sh *)",
       "Bash(bash ~/.claude/skills/new-worktree/new-worktree.sh *)",
-      "Bash(bash ~/.claude/skills/finish-worktree/finish-worktree.sh *)"
+      "Bash(bash ~/.claude/skills/finish-worktree/finish-worktree.sh *)",
+      "Bash(python3 ~/.claude/skills/repo-plan/cost-history.py add *)",
+      "Bash(python3 ~/.claude/skills/repo-plan/cost-history.py summary)",
+      "Bash(python3 ~/.claude/skills/repo-plan/cost-history.py bias *)",
+      "Bash(python3 ~/.claude/skills/repo-plan/worker-status.py *)"
     ],
     "deny": [
       "Edit(~/.claude/agents/**)",
@@ -89,6 +94,15 @@
             "command": "python3 ~/.claude/hooks/worker-budget.py"
           }
         ]
+      },
+      {
+        "matcher": "Agent|Task|SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/dispatch-guard.py"
+          }
+        ]
       }
     ],
     "SubagentStart": [
@@ -101,6 +115,10 @@
           {
             "type": "command",
             "command": "python3 ~/.claude/hooks/subagent-budget.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/subagent-cost.py"
           }
         ]
       }
@@ -134,6 +152,10 @@
             "type": "command",
             "command": "python3 ~/.claude/hooks/worker-control.py",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/agent-guard.py"
           }
         ]
       }
@@ -182,6 +204,16 @@
           {
             "type": "command",
             "command": "python3 ~/.claude/hooks/session-mark.py"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/worker-stop.py"
           }
         ]
       }

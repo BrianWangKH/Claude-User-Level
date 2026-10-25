@@ -1,10 +1,18 @@
 {
-  "_note": "Fallback time budgets in minutes, used only when the orchestrator wrote no plans/budget/<agent_type>.json. Only these agent types are budgeted.",
+  "_note": "Fallback time budgets in minutes, used only when a dispatch brought no `Budget:` line (dispatch-guard.py denies that for these types, so this is a fallback). Only these agent types are budgeted.",
   "minutes": {
     "qa-planner": 15,
     "spec-reviewer": 8,
     "qa": 30,
     "developer": 30,
     "code-reviewer": 30
-  }
+  },
+  "_note_dispatch": "worker_dispatch_margin_minutes: minutes a headless worker keeps for its wrap-up report; dispatch-guard.py denies a dispatch whose `Budget:` minutes plus this margin exceed the run's minutes left.",
+  "worker_dispatch_margin_minutes": 3,
+  "_note_phases": "worker_max_phases: how many PHASE turns run-worker.sh compacts and resumes in one run (test-first has 2: tests-done, dev-done); a loop guard.",
+  "worker_max_phases": 3,
+  "_note_dispatch_usd": "worker_dispatch_margin_usd: USD a headless worker keeps for its wrap-up; dispatch-guard.py denies a dispatch whose `Budget:` usd plus this margin exceeds the run's remaining budget_usd.",
+  "worker_dispatch_margin_usd": 0.5,
+  "_note_cap": "worker_usd_cap_factor: worker-control.py passes est_usd x this as --max-budget-usd (the extra room is for the STATUS: blocked report).",
+  "worker_usd_cap_factor": 1.2
 }

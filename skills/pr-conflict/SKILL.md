@@ -14,7 +14,7 @@ bash ~/.claude/skills/pr-conflict/pr-conflict.sh <topic>
 
 - `FAIL`: report the reason to the user and stop.
 - `MERGED` / `OK`: tell the user there is nothing to resolve. No merge commit is made just because the default branch moved.
-- `CONFLICT:`: list the files for the user, then start a **new** worker session in the worktree (not `--resume`: the old context is long and its cache has expired; the plan and `PR_DESCRIPTION.md` carry what the new session needs). Use the worker command from skill `repo-plan` ("Worker"), with the prompt `/feature-flow <topic> merge` and the next run number. The worktree's `plans/<topic>.md` doesn't need a new section: `merge.md` carries its own worker rules.
-- When the run ends, handle it as any worker run (repo-plan, "When it ends"): `done` → the push command; the PR updates itself.
+- `CONFLICT:`: list the files for the user, then start a **new** worker session in the worktree (not `--resume`: the old context is long and its cache has expired; the plan and `PR_DESCRIPTION.md` carry what the new session needs). Start it as in `~/.claude/skills/repo-plan/handoff.md` ("Worker": estimate, `plans/worker/<topic>.json`, start, wait), with the prompt `/feature-flow <topic> merge` and the next run number. The worktree's `plans/<topic>.md` doesn't need a new section: `merge.md` carries its own worker rules.
+- When the run ends, do what `run-result.py`'s `Next:` line says: `done` → the push command; the PR updates itself.
 
 The worktree session never fetches; the merge uses the `origin/<default>` this fetch brought in (worktrees share the repo's refs).

@@ -11,18 +11,22 @@ disable-model-invocation: true
 The worktree, and with it `plans/<topic>.md` and its `.hook-only/runs/` result files, is deleted in step 2. Do this first.
 
 1. Read `../worktrees/<topic>/plans/<topic>.md` with the Read tool (Bash can't see `plans/`): the plan's class and the `## Cost` and `## Friction` sections. Also Read `plans/friction.md` in the main checkout if it exists.
-2. If `## Cost` has `worker (run <n>)` rows with empty actual columns, fill them first from `../worktrees/<topic>/.hook-only/runs/result-<n>.json` (repo-plan, "When it ends").
-3. Append every `## Cost` row to the cost history with one command per row (Bash can't read `plans/`, so you pass the values you read):
+2. Record the cost history in one command:
    ```bash
-   python3 ~/.claude/skills/repo-plan/cost-history.py add <date> <topic> <branch> <class> <agent> <round> <estTok> <actTok> <estMin> <actMin> <estUsd> <actUsd> "<note>"
+   python3 ~/.claude/skills/repo-plan/cost-history.py import ../worktrees/<topic> <date> <topic> <branch> <class>
    ```
-   Copy the numbers as they are, estimate and actual alike; empty numbers as `""`. Rows without a number estimate get `est: none` in the note; failed runs keep `invalid`. Plans from before 2026-10-20 have the old header (`estimate | actual tokens | actual min`): put their estimate text in the note as `est: <text>`. Then add one `branch` row (agent `branch`, round `-`): the worker rows' estimated and actual USD and minutes summed, or, for a desktop session without worker rows, the actual minutes with `est: none`.
+   It imports every subagent round and worker run from the hooks' records and adds the `branch` row (the worker runs summed). Only rows the hooks can't know need an `add` each (Bash can't read `plans/`, so you pass the values you read): the `orchestrator` rows of `## Cost`, and for a desktop session without worker runs, a `branch` row with the actual minutes and `est: none`:
+   ```bash
+   python3 ~/.claude/skills/repo-plan/cost-history.py add <date> <topic> <branch> <class> <agent> <round> "" "" <estMin> <actMin> <estUsd> <actUsd> "<note>"
+   ```
+   Put the gap reasons from `## Cost` into the summary below, not the history.
+3. `python3 ~/.claude/skills/repo-plan/cost-history.py rows ../worktrees/<topic>` lists the subagent rounds for the summary.
 4. Summarise for the user, in Traditional Chinese: total cost, where it ran over or under its estimate and why, and each friction item.
-5. For each friction item, propose a destination and discuss it with the user: project config (project `CLAUDE.md`, project skills), user config (`~/.claude`: global `CLAUDE.md`, agents, skills, hooks, settings), TODO, or nothing. Change nothing until the user agrees. Point out items that will clearly keep recurring. You can't write `~/.claude`: draft those changes under the main checkout's `plans/config-update/claude/` (same layout as `~/.claude`) and give the user one ordered list of commands in your reply.
+5. For each friction item, propose a destination and discuss it with the user: project config (project `CLAUDE.md`, project skills), user config (`~/.claude`: global `CLAUDE.md`, agents, skills, hooks, settings), TODO, or nothing. Change nothing until the user agrees. Point out items that will clearly keep recurring. You can't write `~/.claude`: build each changed file in full under `$TMPDIR/home-apply-<topic>/` (same layout as `~/.claude`; Bash can diff and test there), show the diff, and give the user the apply steps in your reply, one command per line (`cp`, then `git -C ~/.claude add <paths>` and the commit); for `settings.json`, which you can't read, give the exact block and where it goes.
 6. Append the rows directly to `~/.claude/docs/lessons-log.md` with Bash (the sandbox allows writing `~/.claude/docs`), each at the end of its section's table, in the format of that log: keep the details, and write the 通則 column as one sentence anyone could reuse. Only add rows, never edit existing ones; correct an earlier row with a new row that says so. Tell the user which rows you added.
 7. Remove the handled items from `plans/friction.md`.
 
-If the user wants to skip this, say once that the worktree's records will be lost, then continue. Step 3 is never skipped: it takes no discussion.
+If the user wants to skip this, say once that the worktree's records will be lost, then continue. Step 2 is never skipped: it takes no discussion.
 
 ## 2. Remove the worktree
 
