@@ -8,7 +8,8 @@
       "Bash(bash ~/.claude/skills/new-worktree/new-worktree.sh *)",
       "Bash(bash ~/.claude/skills/finish-worktree/finish-worktree.sh *)",
       "Bash(python3 ~/.claude/skills/repo-plan/cost-history.py add *)",
-      "Bash(python3 ~/.claude/skills/repo-plan/cost-history.py summary)",
+      "Bash(python3 ~/.claude/skills/repo-plan/cost-history.py estimate *)",
+      "Bash(python3 ~/.claude/skills/repo-plan/cost-history.py snapshot *)",
       "Bash(python3 ~/.claude/skills/repo-plan/cost-history.py bias *)",
       "Bash(python3 ~/.claude/skills/repo-plan/worker-status.py *)"
     ],
@@ -65,15 +66,20 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/hooks/agent-guard.py"
-          }
-        ]
-      },
-      {
-        "hooks": [
+            "command": "python3 ~/.claude/hooks/subagent-budget.py"
+          },
           {
             "type": "command",
-            "command": "python3 ~/.claude/hooks/subagent-budget.py"
+            "command": "python3 ~/.claude/hooks/worker-budget.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/agent-guard.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/worker-progress.py",
+            "async": true
           }
         ]
       },
@@ -87,20 +93,30 @@
         ]
       },
       {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/worker-budget.py"
-          }
-        ]
-      },
-      {
         "matcher": "Agent|Task|SendMessage",
         "hooks": [
           {
             "type": "command",
             "command": "python3 ~/.claude/hooks/dispatch-guard.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git *)",
+            "command": "python3 ~/.claude/hooks/crap-gate.py",
+            "timeout": 1800
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/merge-commit-guard.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/bash-guard.py"
           }
         ]
       }
@@ -156,6 +172,14 @@
           {
             "type": "command",
             "command": "python3 ~/.claude/hooks/agent-guard.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/checkpoint-status.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/wt_events.py"
           }
         ]
       }
@@ -167,15 +191,24 @@
           {
             "type": "command",
             "command": "python3 ~/.claude/hooks/finish-worktree.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/merge-origin.py"
+          },
+          {
+            "type": "command",
+            "if": "Bash(git commit *)",
+            "command": "python3 ~/.claude/hooks/flow-next.py"
           }
         ]
       },
       {
-        "matcher": "Bash",
+        "matcher": "Agent|SendMessage",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/hooks/merge-origin.py"
+            "command": "python3 ~/.claude/hooks/flow-next.py"
           }
         ]
       }
@@ -260,6 +293,7 @@
         "~/godot",
         "~/.claude/templates",
         "~/.claude/README.md",
+        "~/.claude/CLAUDE.md",
         "~/go",
         "~/.cache/go-build",
         "~/.local/bin",
@@ -274,6 +308,13 @@
       "$defaults",
       "Per-Command Network Hosts: block any shell command (Bash, PowerShell, Monitor) whose tool input includes a non-empty `allowed_domains` field, regardless of the host (including package registries, the git remote host, or hosts the user mentioned in chat); the Command Network Lists exemptions do not apply. Hostnames that merely appear in the command text (e.g. a `curl` URL) are not a match, and an empty `allowed_domains` is not a match. Non-shell tools (WebFetch, MCP) are intentionally out of scope. Network access must come only from the sandbox `allowedDomains` in settings; the block reason should tell the user to add the host there rather than approving it per command."
     ]
+  },
+  "env": {
+    "CLAUDE_CODE_PLUGIN_DIRS": "~/.claude/mods/wt-pane"
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "python3 ~/.claude/hooks/quota-snapshot.py"
   },
   "feedbackDrafts": "off"
 }

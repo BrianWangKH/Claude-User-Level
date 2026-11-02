@@ -4,7 +4,9 @@ The sandbox blocks network access to the git remote, but hooks run outside it. T
 `git fetch origin` when new-worktree / finish-worktree is invoked, either by the model (PreToolUse on
 Skill) or typed by the user (UserPromptSubmit), and records the result in
 <git common dir>/claude-fetch-status as "<epoch> ok" or "<epoch> fail <detail>".
-It never blocks and prints nothing; the skill scripts read the status file.
+It never blocks and prints nothing; the skill scripts read the status file. In local mode
+(FLOW_INTEGRATION=local) the local default branch is the source of truth: no fetch, and the scripts
+don't read the status.
 """
 import json
 import os
@@ -38,6 +40,13 @@ def main():
 			capture_output=True, text=True, check=True, timeout=5,
 		).stdout.strip()
 	except (subprocess.SubprocessError, OSError):
+		return
+	# git deletes <common dir>/worktrees when its last worktree is removed, and a session's sandbox may
+	# mount a missing .git/worktrees as an empty read-only directory, so new-worktree.sh can't create a
+	# worktree (seen 2026-10-30). This hook runs outside the sandbox, so it makes sure the directory
+	# exists; it also covers a new repo, which finish-worktree.sh's recreation does not.
+	os.makedirs(os.path.join(commonDir, "worktrees"), exist_ok=True)
+	if os.environ.get("FLOW_INTEGRATION") == "local":
 		return
 	try:
 		result = subprocess.run(["git", "-C", cwd, "fetch", "--quiet", "origin"], capture_output=True, text=True, timeout=60)

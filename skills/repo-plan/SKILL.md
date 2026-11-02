@@ -18,6 +18,7 @@ Repo check (run when this skill loaded):
 1. If it says `SKIP: worktree`, you are in a worktree: stop and tell the user to plan from the main checkout. Otherwise its `STATE` picks the mode below, and every `MISSING` line is a candidate topic. Re-run the command above after setup work to refresh it.
 2. The main checkout only plans and wraps up; it never develops unless the user explicitly asks.
 3. Read `plans/repo-plan.md` (create it with the four sections below if it doesn't exist).
+   If the repo has `.claude/skills/repo-plan-notes/SKILL.md`, Read it too: the project's own planning rules (what each rule in a plan must state for this domain). They add to this skill; where they conflict, the project's file wins.
 4. Rebuild the in-progress picture from the repo (never from memory): `git worktree list`, then Read each worktree's `plans/<topic>.md` for its goal, scope and `## TODO items`; treat those as in progress. Mention worktrees whose branch is already merged: they wait for `/finish-worktree`.
 
 ## `plans/repo-plan.md`
@@ -50,7 +51,7 @@ Principle: test decisions and numbers, not pixels. The project `CLAUDE.md` gives
 
 ## Plan rules
 
-- Before any branch starts, settle with the user its scope, what is out of scope, and every 「待討論」 item. 「待討論」 parts are never implemented or tested until the user answers.
+- Before any branch starts, settle with the user its scope, what is out of scope, and every 「待討論」 item (only goal or scope choices are 「待討論」; everything else follows 「Decide, don't ask」). 「待討論」 parts are never implemented or tested until the user answers.
 - Plans are `plans/<topic>.md` and test plans `plans/tests/<topic>.md`; `plans/` is gitignored. Long-term decisions go into the project docs (DESIGN, TODO) and the PR description.
 - Parallel topics must not overlap in scope; a topic that depends on unmerged work waits until it is merged.
 - In-progress work is always rebuilt from `git worktree list` and each worktree's plan, never from a separate list.
@@ -59,6 +60,26 @@ Principle: test decisions and numbers, not pixels. The project `CLAUDE.md` gives
 - Filesystem: repo `sandbox.filesystem` entries don't count while `blockReadsOutsideWorkingDirectories` is on. A new tool or cache outside the repo goes in home settings; tell the user before hand-off.
 - Tests live under `<component>/tests/` for every language (Go tests as a separate package that uses only the public API), so `guard-paths.json` protects them by prefix.
 - Never edit files in a worktree while its worker runs: agent-guard counts the change as the agent's. Wait for the run to end, then edit and resume.
+
+## Decide, don't ask
+
+Flexibility is the point: values and lists always come from config, never hard-coded. First principle: **the temporary state must carry no risk**. Risk means, most serious first: a security risk (leaked secrets or credentials, widened permissions or access, a new exposed surface); lost, corrupted or unrecoverable data; anything sent or published outside that can't be taken back; wrong results someone would trust; a forced rewrite later; and breaking any hard rule in the project `CLAUDE.md`.
+
+For any design choice, in this order:
+
+1. Aim for the long-term best approach, designed flexibly enough to be split into stages.
+2. It feels like a hassle → it isn't split finely enough; it can't be split → the design isn't flexible enough. Redesign and split finer; neither is a question.
+3. Doing only the first stage now carries no risk → decide: build that stage with the extension point and put the later stages in TODO with how they plug in. Don't interrupt the user; record it (below).
+4. **Ask the user** only when risk-free and long-term best can't both hold:
+   - the best approach, even split, carries risk if only its first stage is done now; or
+   - the best approach is risky now and the risk-free option isn't the long-term best.
+   State the concrete risk and consequence of each option.
+
+Common splits that need no question: how many items (records, entities, inputs) — one runs the pipeline end to end, more come later through config; a subset with its own rules (a category, a special case) — exclude it explicitly now and give it its own pipeline when its data is added.
+
+Also decide yourself: choices with a standard answer, names, formats and internal structure. A choice that changes the product's goal or scope always goes to the user.
+
+**Record every decision you make yourself**, sub-decisions included, as you go: a row in the topic's `## Decisions` table (in `plans/repo-plan.md` `討論中` until the plan is written). Columns: 事件 (the situation) | 選擇 (what was chosen, and what was split off to TODO) | 理由 (why, including why the chosen stage alone is risk-free). When the topic is settled, show the user the whole table at once, in Traditional Chinese, before hand-off.
 
 ## Modes
 
@@ -89,8 +110,8 @@ Each `MISSING` item from repo-check becomes part of one docs topic (e.g. `featur
 ### Plan a feature
 
 1. Propose next topics that aren't in progress, don't overlap an active scope, and don't depend on unmerged work.
-2. Discuss until scope, out-of-scope and every 「待討論」 item are settled. Decide the class (see Classes). Settle each input's bounds, whether each value really needs to be adjustable, and which data each state depends on. When a rule changes later, update the whole plan.
-3. Never plan on a guess. Every external fact the plan relies on (a data source's field meaning, units, cumulative vs per-period, limits, deadlines, API behaviour) is checked now in the official docs and cited in the plan (link + quote). Never write "the worker checks first": verification is never deferred to a later step. If the docs don't answer it, it is a 「待討論」 item for the user.
+2. Discuss until scope, out-of-scope and every 「待討論」 item are settled. Decide the class (see Classes). Settle each input's bounds and which data each state depends on; every value and list comes from config. When a rule fixes what an output holds (a report, a file, a table, an API response), the plan names its fields with their types and units, so the interface is the plan's decision, not the tests' (a plan that listed only the contents left qa to pick the report's field names). When a rule changes later, update the whole plan.
+3. Never plan on a guess. Every external fact the plan relies on (a data source's field meaning, units, cumulative vs per-period, limits, deadlines, API behaviour, and the API of every test tool and package manager the tests will use, e.g. a UI test harness's element accessors or a dependency-group default) is checked now in the official docs and cited in the plan (link + quote). Never write "the worker checks first": verification is never deferred to a later step. If the docs don't answer it, it is a 「待討論」 item for the user.
 
 ## Hand off and workers
 

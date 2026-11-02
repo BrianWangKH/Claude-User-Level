@@ -10,6 +10,8 @@
     {"id": "project-flow", "type": "exists", "path": ".claude/skills/project-flow/SKILL.md",
      "hint": "no project-flow skill (test command, done checks)"},
     {"id": "guard-paths", "type": "exists", "path": ".claude/guard-paths.json",
-     "hint": "no .claude/guard-paths.json; agent-guard checks only git refs (template: ~/.claude/templates/guard-paths.json)"}
+     "hint": "no .claude/guard-paths.json; agent-guard checks only git refs (template: ~/.claude/templates/guard-paths.json)"},
+    {"id": "quality-gates", "type": "exists", "path": ".claude/quality-gates.json",
+     "hint": "no .claude/quality-gates.json; crap-gate and mutation do nothing in this repo (template: ~/.claude/templates/quality-gates.json; needs a coverage tool)"}
   ]
 }

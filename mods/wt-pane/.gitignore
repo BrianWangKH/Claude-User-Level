@@ -1,0 +1,4 @@
+# Written by Claude Code when it loads the mod (API types and the tsconfig that extends them,
+# for the editor and tsc); regenerated on every load, not ours to keep.
+.claude-plugin/types/
+/tsconfig.json

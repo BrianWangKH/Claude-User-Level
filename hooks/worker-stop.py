@@ -4,9 +4,16 @@
 Active only in a worker run (CLAUDE_WORKER_MINUTES set by run-worker.sh) and not during the wrapper's
 own /compact calls (CLAUDE_WORKER_COMPACT set).
 
-- Background work in flight (Stop input `background_tasks`: a subagent, shell or monitor the turn is
-  waiting for): a turn whose first line is `STATUS:` or `PHASE:` is blocked, because the wrapper would
-  end or compact the run under it. A turn without one is a pause and may stop.
+- Background commands or monitors in flight (Stop input `background_tasks` entries without an
+  agent_type): a turn whose first line is `STATUS:` or `PHASE:` is blocked, because the wrapper would end
+  or compact the run under it; `claude -p` gives one more turn with their outcome. A turn without one is
+  a pause and may stop.
+- Background subagents (entries with an agent_type) don't hold the ending: `claude -p` waits for them
+  before it exits anyway, and their completion gives no further turn (headless docs, "Background tasks
+  at exit"), so blocking a STATUS line under one lost it (inferred-report-dates run 1, 2026-10-31). A
+  turn without a STATUS line while one runs is a pause: its hand-back starts the next turn. That an
+  entry for a subagent carries agent_type is assumed from this hook's earlier use; an entry without it
+  is treated as a command, which is the old behaviour.
 - Nothing in flight: the first non-empty line of `last_assistant_message` must be
   `STATUS: done|needs-decision|blocked` or `PHASE: tests-done|dev-done`. Otherwise the stop is blocked
   once with the format; on the retry (`stop_hook_active`) it lets the turn end, and the planning
@@ -41,10 +48,13 @@ def main():
 	first = lines[0] if lines else ""
 	ending = bool(ENDING.match(first))
 	tasks = data.get("background_tasks") or []
-	if tasks:
+	commands = [t for t in tasks if not t.get("agent_type")]
+	if commands:
 		if ending:
-			what = ", ".join(t.get("agent_type") or t.get("description") or t.get("type") or "?" for t in tasks)
-			block(IN_FLIGHT.format(n=len(tasks), what=what[:300]))
+			what = ", ".join(t.get("description") or t.get("type") or "?" for t in commands)
+			block(IN_FLIGHT.format(n=len(commands), what=what[:300]))
+		return
+	if tasks and not ending:
 		return
 	if not ending and not data.get("stop_hook_active"):
 		block(FORMAT)

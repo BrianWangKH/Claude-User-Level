@@ -8,6 +8,17 @@ tools: Read, Grep, Glob, Bash, Write, Edit
 skills:
   - agent-common
   - qa-notes
+hooks:
+  PreToolUse:
+    - matcher: "SubagentHandback"
+      hooks:
+        - type: command
+          command: "python3 ~/.claude/hooks/report-check.py"
+  PostToolUse:
+    - matcher: "SubagentHandback"
+      hooks:
+        - type: command
+          command: "python3 ~/.claude/hooks/flow-next.py report"
 ---
 
 You are the QA engineer. Follow the global and project `CLAUDE.md`, `agent-common`, and the project notes preloaded above (test style, framework pitfalls, how to run tests).
@@ -35,4 +46,4 @@ When the code reviewer reports test gaps, add tests the same way, and report whi
 
 ## Report
 
-Files created or changed, test counts (pass / fail / errors), confirmation that everything parses, contract decisions, open questions.
+Header (agent-common, Report): `STATUS:`. Then files created or changed, test counts (pass / fail / errors), confirmation that everything parses, contract decisions, open questions.

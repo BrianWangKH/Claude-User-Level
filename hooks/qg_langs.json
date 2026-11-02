@@ -1,0 +1,142 @@
+{
+  "_comment": "Per-language syntax for the generic complexity engine and the text mutator (qg_complexity.py, qg_mutate.py). Python and Go complexity come from their official parsers; the generic profile of each is kept so its accuracy can be tested against them.",
+  "python": {
+    "extensions": [
+      ".py"
+    ],
+    "line_comment": "#",
+    "block_comment": null,
+    "strings": [
+      "\"\"\"",
+      "'''",
+      "\"",
+      "'"
+    ],
+    "escape": "\\",
+    "body": "indent",
+    "function": "^\\s*(?:async\\s+)?def\\s+(\\w+)",
+    "class": "^\\s*class\\s+(\\w+)",
+    "decisions": [
+      "if",
+      "elif",
+      "for",
+      "while",
+      "except",
+      "case"
+    ],
+    "bool_ops": [
+      "and",
+      "or"
+    ],
+    "marker": "#\\s*pragma:?\\s*no\\s*cover",
+    "bool_swap": [
+      [
+        "and",
+        "or"
+      ]
+    ],
+    "negation": "\\bnot\\s+",
+    "literals": [
+      [
+        "True",
+        "False"
+      ]
+    ],
+    "delete_with": "pass",
+    "block_open": ":",
+    "marker_native": true
+  },
+  "go": {
+    "extensions": [
+      ".go"
+    ],
+    "line_comment": "//",
+    "block_comment": [
+      "/*",
+      "*/"
+    ],
+    "strings": [
+      "`",
+      "\"",
+      "'"
+    ],
+    "raw_strings": [
+      "`"
+    ],
+    "escape": "\\",
+    "body": "brace",
+    "function": "^func\\s+(?:\\([^)]*\\)\\s*)?(\\w+)",
+    "class": null,
+    "decisions": [
+      "if",
+      "for",
+      "case"
+    ],
+    "bool_ops": [
+      "&&",
+      "||"
+    ],
+    "marker": "//\\s*coverage:ignore",
+    "bool_swap": [
+      [
+        "&&",
+        "||"
+      ]
+    ],
+    "negation": "!(?![=])",
+    "literals": [
+      [
+        "true",
+        "false"
+      ]
+    ],
+    "delete_with": "",
+    "block_open": "{",
+    "marker_native": false
+  },
+  "gdscript": {
+    "extensions": [
+      ".gd"
+    ],
+    "line_comment": "#",
+    "block_comment": null,
+    "strings": [
+      "\"\"\"",
+      "\"",
+      "'"
+    ],
+    "escape": "\\",
+    "body": "indent",
+    "function": "^\\s*(?:static\\s+)?func\\s+(\\w+)",
+    "class": "^\\s*class\\s+(\\w+)",
+    "decisions": [
+      "if",
+      "elif",
+      "for",
+      "while"
+    ],
+    "bool_ops": [
+      "and",
+      "or",
+      "&&",
+      "||"
+    ],
+    "marker": null,
+    "bool_swap": [
+      [
+        "and",
+        "or"
+      ]
+    ],
+    "negation": "\\bnot\\s+",
+    "literals": [
+      [
+        "true",
+        "false"
+      ]
+    ],
+    "delete_with": "pass",
+    "block_open": ":",
+    "marker_native": false
+  }
+}

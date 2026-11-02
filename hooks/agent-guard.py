@@ -18,14 +18,35 @@ This hook knows no project: every path comes from the repo's .claude/guard-paths
               live in); each change sends a reminder, not an ALERT, so the code reviewer reads
               the diff. The hook never parses file contents.
 Without the file only refs are checked, and a reminder says so.
-guard-paths.json is read at SubagentStart and kept in the snapshot, so an agent that edits or
-deletes it can't loosen its own check. Any change under .claude/ (guard-paths, agents, settings,
+guard-paths.json is read at SubagentStart, as committed at the diff base (qg_common.committedJson,
+never the working tree), and kept in the snapshot: neither the agent nor anyone earlier on the branch
+can loosen the check by editing or deleting it; a change takes effect once merged. Any change under .claude/ (guard-paths, agents, settings,
 skills) by developer or qa is an ALERT: project config is the planning session's job.
+
+Review verdicts: the verdict line of each code-reviewer report (APPROVE or CHANGES REQUESTED,
+code-reviewer.md) is appended with HEAD to <checkout>/.hook-only/reviews.jsonl. A reviewer that hands
+its report back (SubagentHandback, Claude Code v2.1.271+) is recorded at PostToolUse on that tool
+(code-reviewer.md frontmatter), from tool_input.message: the hooks docs say last_assistant_message
+"then holds the subagent's closing text, if any, which is not the delivered report", and a
+hand-back the mutation gate denies never reaches PostToolUse ("After a tool call succeeds"), so only
+the delivered report counts. Its SubagentStop then records nothing for the same HEAD (the closing
+text would land as NONE after the APPROVE, and auto-merge reads the last full verdict); a reviewer
+that ends without a hand-back is recorded at SubagentStop from last_assistant_message. Each line has kind
+"merge" when dispatch-guard accepted it as a merge review (merge-review-pending in this hook's
+directory, claimed at that reviewer's SubagentStart) and "full" otherwise. auto-merge.py
+(local mode) merges only on an APPROVE recorded here, never on the plan's ## Reviewer section, which the
+orchestrator writes.
 
 Refs: HEAD and the checked-out branch must not change (ALERT). Stash entries made on this
 checkout's branch, or whose branch can't be read, must not appear or disappear (ALERT); stash,
 tags and other local branches are shared by every worktree, so their other changes only send a
-reminder. refs/remotes is ignored (fetches).
+reminder. refs/remotes is ignored (fetches). A move something else accounts for sends nothing (parallel
+workers, 2026-11-01: every round of one topic reported the other topic's branch): the branch checked out
+in another worktree where a worker run was active during the round (its runs/start-<n> and exit-<n>,
+written by run-worker.sh), or a commit auto-merge.py recorded in <main>/.hook-only/auto-merge/merges.jsonl.
+Both records are hook-only files, so an agent can't explain its own move away; any other move of another
+branch still sends the reminder: branches live in the main checkout's .git, which every worktree shares
+and a worker writes to commit, so `git branch -f` or `git update-ref` in one worktree moves another's.
 
 Files: only paths that are dirty at start or at stop are compared (status code + content hash), so
 edits that were already there before the round (fix rounds) don't count as changes.
@@ -67,8 +88,10 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime
 
 import hookonly
+import qg_common
 
 GUARD_PATHS_FILE = os.path.join(".claude", "guard-paths.json")
 PROJECT_CONFIG_DIR = ".claude"
@@ -95,11 +118,9 @@ def roleOf(agentType):
 
 
 def loadGuardPaths(root):
-	path = os.path.join(root, GUARD_PATHS_FILE)
-	if not os.path.isfile(path):
+	given = qg_common.committedJson(root, GUARD_PATHS_FILE)
+	if given is None:
 		return None
-	with open(path, encoding="utf-8") as f:
-		given = json.load(f)
 	return {key: [str(p).rstrip("/") for p in given.get(key) or []] for key in ("tests", "qaConfig", "shared")}
 
 
@@ -196,8 +217,55 @@ def changedFiles(before, after):
 	return sorted(p for p in paths if before.get(p, "clean") != after.get(p, "clean"))
 
 
-def refFindings(before, after):
+def runActive(worktree, since):
+	"""Whether a worker run in worktree was active at any time since `since` (epoch seconds)."""
+	runs = os.path.join(worktree, ".hook-only", "runs")
+	try:
+		names = os.listdir(runs)
+	except OSError:
+		return False
+	for name in names:
+		match = re.fullmatch(r"start-(\d+)", name)
+		if not match:
+			continue
+		try:
+			with open(os.path.join(runs, f"exit-{match.group(1)}"), encoding="utf-8") as f:
+				ended = f.read().strip().partition(" ")[2]
+		except OSError:
+			return True  # no exit file yet: still running
+		try:
+			if not ended or datetime.fromisoformat(ended).timestamp() >= since:
+				return True
+		except ValueError:
+			return True
+	return False
+
+
+def explainedMoves(root, since):
+	"""(branches, commits) whose moves another process accounts for (module doc, Refs)."""
+	common = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False).strip()
+	mainDir = os.path.dirname(common) if common.endswith("/.git") else None
+	commits = set()
+	if mainDir:
+		try:
+			with open(os.path.join(mainDir, ".hook-only", "auto-merge", "merges.jsonl"), encoding="utf-8") as f:
+				commits = {json.loads(line).get("commit") for line in f if line.strip()}
+		except (OSError, ValueError):
+			commits = set()
+	branches, path, here = set(), None, os.path.realpath(root)
+	for line in git(root, "worktree", "list", "--porcelain", check=False).splitlines() + [""]:
+		if line.startswith("worktree "):
+			path = line[len("worktree "):]
+		elif line.startswith("branch ") and path and os.path.realpath(path) != here and runActive(path, since):
+			branches.add(line[len("branch "):])
+		elif not line:
+			path = None
+	return branches, commits
+
+
+def refFindings(before, after, explained=(set(), set())):
 	alerts, notes = [], []
+	explainedBranches, explainedCommits = explained
 	if before["head"] != after["head"]:
 		alerts.append(f"HEAD moved {before['head'][:10]} -> {after['head'][:10]}")
 	if before["branch"] != after["branch"]:
@@ -215,6 +283,8 @@ def refFindings(before, after):
 		if old == new or name in own or name == "refs/stash":
 			continue
 		what = "created" if old is None else "deleted" if new is None else "moved"
+		if what == "moved" and (name in explainedBranches or new in explainedCommits):
+			continue
 		# Tags and other branches are shared by every worktree: a change may be another
 		# worktree's, so it is a reminder, not an ALERT.
 		if name.startswith("refs/tags/"):
@@ -224,9 +294,9 @@ def refFindings(before, after):
 	return alerts, notes
 
 
-def evaluate(role, before, after, guardPaths):
+def evaluate(role, before, after, guardPaths, explained=(set(), set())):
 	"""Returns (alerts, reminders) as lists of short findings."""
-	alerts, reminders = refFindings(before["refs"], after["refs"])
+	alerts, reminders = refFindings(before["refs"], after["refs"], explained)
 	changed = changedFiles(before["files"], after["files"])
 	if role == "reviewer":
 		if changed:
@@ -236,7 +306,7 @@ def evaluate(role, before, after, guardPaths):
 	if config:
 		alerts.append("project config under .claude/ changed: " + ", ".join(config))
 	if guardPaths is None:
-		reminders.append(f"{GUARD_PATHS_FILE} not found; only refs were checked")
+		reminders.append(f"{GUARD_PATHS_FILE} not found at the diff base; only refs were checked")
 		return alerts, reminders
 	tests, qaConfig, shared = guardPaths["tests"], guardPaths["qaConfig"], guardPaths["shared"]
 	sharedChanged = [p for p in changed if matches(p, shared) and not matches(p, tests + qaConfig)]
@@ -278,6 +348,10 @@ def onStart(data, root, directory):
 	except Exception as error:
 		state = {"error": f"snapshot failed: {error}"}
 	state["agent_type"] = data.get("agent_type")
+	pending = os.path.join(directory, "merge-review-pending")
+	if data.get("agent_type") == "code-reviewer" and os.path.isfile(pending):
+		os.remove(pending)
+		state["review_kind"] = "merge"
 	try:
 		state["guard_paths"] = loadGuardPaths(root)
 	except Exception as error:
@@ -287,7 +361,61 @@ def onStart(data, root, directory):
 	removeStale(directory)
 
 
+VERDICT = re.compile(r"^[\W_]*(?:verdict[\W_]*)?(APPROVE|CHANGES REQUESTED)\b", re.MULTILINE | re.IGNORECASE)
+
+
+def reviewsPath(root):
+	return os.path.join(root, hookonly.NAME, "reviews.jsonl")
+
+
+def handedBack(root, agentId, head):
+	"""True when this reviewer's last recorded verdict came from its hand-back at this HEAD."""
+	try:
+		with open(reviewsPath(root), encoding="utf-8") as f:
+			lines = [json.loads(l) for l in f if l.strip()]
+	except (OSError, ValueError):
+		return False
+	mine = [r for r in lines if r.get("agent_id") == agentId]
+	return bool(mine) and mine[-1].get("via") == "handback" and mine[-1].get("head") == head
+
+
+def recordVerdict(data, root, kind="full", message=None, via="stop"):
+	"""Append the code reviewer's verdict with HEAD to .hook-only/reviews.jsonl (module doc)."""
+	if data.get("agent_type") != "code-reviewer":
+		return
+	head = git(root, "rev-parse", "-q", "--verify", "HEAD", check=False).strip()
+	if via == "stop" and handedBack(root, data.get("agent_id"), head):
+		return
+	if message is None:
+		message = data.get("last_assistant_message") or ""
+	found = [m.group(1).upper() for m in VERDICT.finditer(message)]
+	# Conservative: APPROVE only when no "CHANGES REQUESTED" appears anywhere (a report that echoes the
+	# verdict template would otherwise pass); a wrong refusal costs one look, a wrong APPROVE a merge.
+	if "CHANGES REQUESTED" in message:
+		verdict = "CHANGES REQUESTED"
+	else:
+		verdict = "APPROVE" if "APPROVE" in found else "NONE"
+	os.makedirs(os.path.join(root, hookonly.NAME), exist_ok=True)
+	append(reviewsPath(root), json.dumps({"t": time.strftime("%Y-%m-%dT%H:%M:%S"),
+		"agent_id": data.get("agent_id"), "verdict": verdict, "head": head, "kind": kind, "via": via}))
+
+
+def handbackMessage(data):
+	"""The delivered report of a SubagentHandback call: tool_input.message (hooks docs, SubagentStop)."""
+	message = (data.get("tool_input") or {}).get("message")
+	return message if isinstance(message, str) else ""
+
+
+def reviewKind(directory, agentId):
+	try:
+		with open(os.path.join(directory, f"{agentId}.json"), encoding="utf-8") as f:
+			return json.load(f).get("review_kind", "full")
+	except (OSError, ValueError):
+		return "full"
+
+
 def onStop(data, root, directory):
+	recordVerdict(data, root, reviewKind(directory, data.get("agent_id")))
 	agentType = data.get("agent_type")
 	agentId = data["agent_id"]
 	label = f"agent-guard: {agentType} ({agentId})"
@@ -300,7 +428,8 @@ def onStop(data, root, directory):
 		if "error" in before:
 			raise RuntimeError(before["error"])
 		guardPaths = before["guard_paths"] if "guard_paths" in before else loadGuardPaths(root)
-		alerts, reminders = evaluate(roleOf(agentType), before, snapshot(root), guardPaths)
+		explained = explainedMoves(root, float(before.get("taken") or 0))
+		alerts, reminders = evaluate(roleOf(agentType), before, snapshot(root), guardPaths, explained)
 	except Exception as error:
 		alerts, reminders = [f"guard could not check this round ({error})"], []
 	os.makedirs(directory, exist_ok=True)
@@ -394,6 +523,8 @@ def main():
 		onStart(data, root, directory)
 	elif event == "SubagentStop":
 		onStop(data, root, directory)
+	elif event == "PostToolUse" and data.get("tool_name") == "SubagentHandback":
+		recordVerdict(data, root, reviewKind(directory, data.get("agent_id")), handbackMessage(data), via="handback")
 	elif event == "PreToolUse":
 		onMainPreToolUse(data, root, directory)
 	elif event == "UserPromptSubmit":

@@ -1,0 +1,9 @@
+{
+  "name": "wt-pane",
+  "version": "0.4.0",
+  "author": {
+    "name": "BrianWangKH"
+  },
+  "description": "Pane of the running worktree workers (current subagent, flow step, last tool call, spend) with launch/resume/stop buttons and an opt-in auto mode, all through the wt prompts, and `wt local on|off` for the flow mode",
+  "types": "./types/index.d.ts"
+}

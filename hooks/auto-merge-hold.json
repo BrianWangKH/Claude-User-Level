@@ -1,0 +1,10 @@
+{
+  "_comment": "auto-merge.py (local mode) never merges a branch that changes these paths: a person reviews them. Home defaults, a repo can only add more (\"auto_merge_hold\" in .claude/quality-gates.json, read from the base commit). guard-paths style: \"dir/\" is a prefix, * and ? are globs, else the exact path or a directory prefix. Why each: .claude/ and .mcp.json hold the hooks, permissions and tools agents run under; CI files run code on push; dependency manifests and lock files pull new code from the internet (supply chain).",
+  "paths": [
+    ".claude/", ".mcp.json", ".github/", ".gitlab-ci.yml", ".gitmodules",
+    "**/pyproject.toml", "**/uv.lock", "**/requirements*.txt", "**/setup.py", "**/setup.cfg",
+    "**/go.mod", "**/go.sum",
+    "**/package.json", "**/package-lock.json", "**/pnpm-lock.yaml", "**/yarn.lock",
+    "**/Cargo.toml", "**/Cargo.lock", "**/Dockerfile*", "**/docker-compose*.yml"
+  ]
+}

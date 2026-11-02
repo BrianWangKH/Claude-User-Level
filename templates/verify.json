@@ -1,0 +1,22 @@
+{
+  "_comment": "Real-data checks for one topic, read by ~/.claude/hooks/verify.py after the worker's STATUS: done. The planning session writes it to <main>/plans/verify/<topic>.json at hand-off (the worker can't write there). Placeholders: {repo} the worktree, {data} a scratch copy of data_paths (also DATA_ROOT), {tmp} a scratch dir for 'files'. Per check: run (argv, no shell), exit (default 0), output_contains, repeat_same (globs under {data}, run twice, same sha256), unchanged (globs under {data} that must not change), timeout_seconds. Optional 'verifier' (second layer, ~/.claude/hooks/verifier.py, after every check passed): a verifier agent judges every rule of the approved plan plus each 'judge' item on a copy of the same data; usd and minutes are its raw estimate (the hook corrects them with the history of agent verifier). Put here the judgements the plan's manual verification would otherwise leave to the person (whether numbers make sense, whether a rule holds on real rows), each one checkable from the data; screens stay in plans/manual-verify.md.",
+  "data": "data",
+  "data_paths": ["features", "clean", "research"],
+  "env": {"UV_PROJECT_ENVIRONMENT": "{repo}/.venv"},
+  "files": {
+    "bad_signals.toml": "split_date = \"2022-01-01\"\nmin_events = 20\nscorers = [\"event_stats\"]\nselect_by = \"event_stats.lift_mean\"\n\n[[signals]]\nname = \"../escape\"\nfeature = \"revenue_yoy_3m\"\ntransform = \"raw\"\nside = \"long\"\nrule = \"threshold\"\nop = \">=\"\nfinder = \"grid\"\nvalues = [0.1]\n"
+  },
+  "verifier": {
+    "usd": 1.5,
+    "minutes": 15,
+    "judge": [
+      "<output>: every <metric> lies in [<low>, <high>]; far outside means <the likely bug>",
+      "<output>: no row uses an input that is known only after the row's date (rule <id> of the plan)"
+    ]
+  },
+  "checks": [
+    {"name": "models run and are deterministic", "run": ["~/.local/bin/uv", "run", "--no-sync", "python", "-m", "research.models"], "repeat_same": ["research/models/*.json"]},
+    {"name": "AUC within [0, 1]", "run": ["~/.local/bin/uv", "run", "--no-sync", "python", "-c", "import json,glob,os\nfor f in glob.glob(os.environ['DATA_ROOT']+'/research/models/*.json'):\n  for h in json.load(open(f))['horizons']:\n    for seg in (h['auc'] or {}).values() if isinstance(h.get('auc'), dict) else []:\n      for v in seg.values():\n        assert v is None or 0 <= v <= 1, (f, v)"]},
+    {"name": "a path-like signal name is refused", "run": ["~/.local/bin/uv", "run", "--no-sync", "python", "-m", "research.signals", "--config", "{tmp}/bad_signals.toml"], "exit": 1, "output_contains": ["error: signal name '../escape'"], "unchanged": ["research/**"]}
+  ]
+}

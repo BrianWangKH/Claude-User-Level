@@ -1,0 +1,56 @@
+{
+  "poll_seconds": 2,
+  "spinner_ms": 250,
+  "linger_minutes": 10,
+  "bar_width": 12,
+  "view": "stage",
+  "pose_hold_seconds": 20,
+  "walk_step": 2,
+  "stations": [
+    "qa-planner",
+    "spec-reviewer",
+    "qa",
+    "developer",
+    "code-reviewer"
+  ],
+  "colors": {
+    "orchestrator": "#e0e0e0",
+    "qa-planner": "#33cccc",
+    "spec-reviewer": "#4a7dff",
+    "qa": "#33cc66",
+    "developer": "#ddbb22",
+    "code-reviewer": "#bb55dd",
+    "other": "#9aa0a6"
+  },
+  "labels": {
+    "qa-planner": "plan",
+    "spec-reviewer": "spec",
+    "qa": "qa",
+    "developer": "dev",
+    "code-reviewer": "rev"
+  },
+  "verbs": {
+    "Bash": "running",
+    "Read": "reading",
+    "Grep": "reading",
+    "Glob": "reading",
+    "Edit": "writing",
+    "Write": "writing",
+    "NotebookEdit": "writing",
+    "Agent": "assigning",
+    "Task": "assigning",
+    "SendMessage": "assigning"
+  },
+  "idle_verb": "thinking",
+  "wait_verb": "waiting",
+  "confirm_seconds": 5,
+  "controls_seconds": 5,
+  "warn_ratio": 1,
+  "band_toggle": true,
+  "events_poll_seconds": 15,
+  "pending_minutes": 15,
+  "notices_max": 30,
+  "toast_min_seconds": 6,
+  "toast_max_seconds": 20,
+  "toast_chars_per_second": 20
+}

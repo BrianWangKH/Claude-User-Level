@@ -1,0 +1,47 @@
+{
+  "_comment": "Sandbox for the commands crap-gate.py and mutation.py run (qg_common.runCommand). Hooks run outside Claude Code's sandbox with the user's full access (code.claude.com/docs/en/sandboxing, 'What runs outside the sandbox'), and those commands run code agents wrote. Home only, not overridable from a repo. bwrap: / read-only, the 'hide' paths (the home settings' sandbox denyRead: other homes, the Windows drives under /mnt, /run/WSL whose interop socket would start Windows programs outside bwrap; add a path here whenever one is added to denyRead) and $HOME replaced by empty tmpfs with only the paths below put back, /tmp a fresh tmpfs, no network, a cleared environment. The checkout or scratch copy under test is writable except the 'protect' entries inside it. home_write mirrors the home settings' sandbox allowWrite (uv and Go caches), so a test can't do more than a sandboxed Bash command already can. A repo adds its own protected paths with \"protect\" in quality-gates.json (read from the diff base, so a branch can't change them); it can't remove these. Known limit: in a worktree .git is a file pointing into the main checkout's .git under a hidden home, so tests or tools that call git (e.g. setuptools-scm) fail and crap-gate only says 'produced no report'.",
+  "hide": [
+    "/home",
+    "/mnt",
+    "/media",
+    "/run/media",
+    "/srv",
+    "/root",
+    "/run/user",
+    "/run/WSL",
+    "/Users",
+    "/Volumes"
+  ],
+  "home_read": [
+    "~/.local/bin",
+    "~/.local/share/uv/python"
+  ],
+  "home_write": [
+    "~/.cache/uv",
+    "~/.cache/go-build",
+    "~/go"
+  ],
+  "protect": [
+    ".git",
+    ".hook-only",
+    ".claude",
+    "plans"
+  ],
+  "env_pass": [
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "TZ",
+    "USER",
+    "LOGNAME"
+  ],
+  "env_set": {
+    "TMPDIR": "/tmp",
+    "UV_OFFLINE": "1",
+    "GOPROXY": "off",
+    "GOTOOLCHAIN": "local"
+  },
+  "probe_timeout_seconds": 10
+}

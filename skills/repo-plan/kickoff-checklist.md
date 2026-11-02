@@ -20,6 +20,7 @@ Topics to settle with the user for a new repo. One line per item; add lines as n
 - Test framework and version; how to run all tests and one test [project-flow skill]
 - "Done" checks beyond tests (build, smoke run, no generated-file churn) [project-flow skill]
 - Protected paths: tests, test config, shared files [`.claude/guard-paths.json` from `~/.claude/templates/guard-paths.json`]
+- Quality gates (complexity, CRAP, unexecuted changed lines at the developer's stop and at commit; mutation for the code reviewer): per language the coverage command, a fail-fast test command, source and excluded paths; the coverage tool as a dev dependency (Python: pytest-cov and `[tool.coverage.run] patch = ["subprocess"]`) [`.claude/quality-gates.json` from `~/.claude/templates/quality-gates.json`, dependency file, project-flow skill]
 - Agent notes skills for project pitfalls (`developer-notes`, `qa-notes`, `code-reviewer-notes`, `spec-reviewer-notes`) [`.claude/skills/`]
 
 ## Repo hygiene

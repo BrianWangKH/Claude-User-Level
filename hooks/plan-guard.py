@@ -1,6 +1,8 @@
 """PreToolUse guard for the test-first flow.
 
 - code-reviewer: may not read anything under plans/ (plan-blind review).
+- verifier: may not read anything under plans/ either: it judges against the approved plan the hook copied
+  to .hook-only/verifier-<run>/plan.md, never the worktree's copy, which the worker can edit (verifier.py).
 - qa-planner / qa: may only write under plans/tests/.
 - developer: may not write under plans/.
 - main session: may not pass arguments to blind-review.
@@ -71,6 +73,8 @@ def main():
 
 	if agentType == "code-reviewer" and tool in READ_TOOLS | WRITE_TOOLS and isUnder(path, plansDir, cwd):
 		deny("Plan-blind review: code-reviewer may not access plans/.")
+	if agentType == "verifier" and tool in READ_TOOLS | WRITE_TOOLS and isUnder(path, plansDir, cwd):
+		deny("verifier: read the approved plan in .hook-only/verifier-<run>/plan.md, not plans/ (the worker can edit that copy).")
 
 	if tool not in WRITE_TOOLS or not isUnder(path, plansDir, cwd):
 		return

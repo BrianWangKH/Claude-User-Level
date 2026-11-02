@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Create a feature branch and its worktree at <parent of main repo>/worktrees/<topic>,
-# based on origin's default branch. Run from the main checkout, after a fresh fetch
-# (the fetch-origin hook fetches when this skill is invoked).
+# based on the integration branch (base-ref.sh: origin's default branch, or the local main in local
+# mode). Run from the main checkout, after a fresh fetch (the fetch-origin hook fetches when this skill
+# is invoked; local mode needs none).
 # Usage: bash new-worktree.sh <type>/<scope>/<topic>
 # Exit: 0 created, 1 precondition failed, 2 usage error.
 set -u
@@ -22,19 +23,16 @@ gitDir=$(git rev-parse --absolute-git-dir 2>/dev/null) || fail "not inside a git
 commonDir=$(git rev-parse --path-format=absolute --git-common-dir);
 [ "${gitDir}" = "${commonDir}" ] || fail "run this from the main checkout, not a worktree";
 
-statusFile="${commonDir}/claude-fetch-status";
-[ -f "${statusFile}" ] || fail "no fetch status; invoke the skill again so the fetch hook runs";
-read -r fetchedAt fetchResult fetchDetail < "${statusFile}";
-[ "${fetchResult}" = "ok" ] || fail "last fetch failed: ${fetchDetail:-unknown}";
-[ $(( $(date +%s) - fetchedAt )) -le 600 ] || fail "last fetch is older than 10 minutes; invoke the skill again";
-
-base=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null);
-if [ -z "${base}" ]; then
-	for candidate in origin/master origin/main; do
-		git rev-parse --verify --quiet "${candidate}" >/dev/null && base=${candidate} && break;
-	done
+# Local mode (FLOW_INTEGRATION=local) compares with the local default branch: no fetch needed.
+if [ "${FLOW_INTEGRATION:-}" != "local" ]; then
+	statusFile="${commonDir}/claude-fetch-status";
+	[ -f "${statusFile}" ] || fail "no fetch status; invoke the skill again so the fetch hook runs";
+	read -r fetchedAt fetchResult fetchDetail < "${statusFile}";
+	[ "${fetchResult}" = "ok" ] || fail "last fetch failed: ${fetchDetail:-unknown}";
+	[ $(( $(date +%s) - fetchedAt )) -le 600 ] || fail "last fetch is older than 10 minutes; invoke the skill again";
 fi
-[ -n "${base}" ] || fail "cannot find origin's default branch";
+
+base=$(bash ~/.claude/skills/feature-flow/base-ref.sh) || fail "cannot find the integration branch (base-ref.sh)";
 
 mainRoot=$(dirname "${commonDir}");
 worktreesDir="$(dirname "${mainRoot}")/worktrees";
@@ -42,7 +40,7 @@ path="${worktreesDir}/${topic}";
 
 [ -d "${worktreesDir}" ] || fail "${worktreesDir} does not exist; ask the user to create it (the sandbox can't)";
 [ ! -e "${path}" ] || fail "${path} already exists";
-git rev-parse --verify --quiet "refs/heads/${branch}" >/dev/null && fail "branch ${branch} already exists locally";
+git rev-parse --verify --quiet "refs/heads/${branch}" >/dev/null && fail "branch ${branch} already exists locally (finish-worktree keeps merged branches; if it is merged into ${base}, delete it in your terminal: git branch -D ${branch})";
 git rev-parse --verify --quiet "refs/remotes/origin/${branch}" >/dev/null && fail "branch ${branch} already exists on origin";
 
 # --no-track: no upstream (a branch tracking origin/master could push to the wrong place,

@@ -9,9 +9,9 @@ user-invocable: false
 ## Budget and asking for help
 
 - Your dispatch message has a `Budget: <T> min, $<U>` line. Run `date` when you start and check it at natural breaks: you can see the minutes, not the USD.
-- Near 80% of the minutes, stop at a clean point and report `CHECKPOINT`: what is done, what you tried, your current hypothesis, what remains, what finishing would cost.
-- Report `BLOCKED` early, without waiting for 80%, if the same failure survives 2 fix attempts, the problem is outside this assignment, the spec is unclear, or the environment blocks you (sandbox, permission, hang).
-- A hook counts both minutes and USD and denies your tool calls at 80% (unless the line says `full`) and at 100%: a tool call denied with a budget message means stop now and report as the message says. Don't retry the tool or work around it.
+- The budget is the expected size of your work, not a limit: aim to finish within it. At its minutes, finish if what remains is small; if the rest clearly won't fit (now or earlier), stop at a clean point and report `CHECKPOINT`: what is done, what you tried, your current hypothesis, what remains, what finishing would cost.
+- Report `BLOCKED` early, without waiting for the budget, if the same failure survives 2 fix attempts, the problem is outside this assignment, the spec is unclear, or the environment blocks you (sandbox, permission, hang).
+- A hook counts both minutes and USD and denies your tool calls a little past the budget (`budget_headroom` × it): a tool call denied with a budget message means stop now and report as the message says. Don't retry the tool or work around it.
 
 ## Repo
 
@@ -21,6 +21,7 @@ user-invocable: false
 ## Tests
 
 - While iterating, run the narrowest scope (one test or one file) with a timeout; run the full suite only to confirm.
+- Run the full suite with `run_in_background` and wait for its completion notification; give it no timeout of your own (a suite only grows, so any fixed one runs out).
 - Never run the full suite repeatedly to bisect, probe or mutate (the code reviewer's fixed mutations are the only exception).
 - A test that hangs or flakes and isn't yours to fix: at most 3 narrow runs, then report it as `BLOCKED` (test name, symptom, what you tried).
 
@@ -35,7 +36,17 @@ If you wrote or changed code files (qa: tests and fixtures; developer: implement
 
 ## Report
 
-Start with the status: `DONE`, `CHECKPOINT` or `BLOCKED`. Then your role's report. Keep it short: the orchestrator re-reads every report on each later request. Long material goes into the files you were asked to write, not into the report. developer and qa: at most about 1,500 characters (status, pass/fail counts, files changed, open problems). Reviewers: the orchestrator passes your findings on verbatim, so write each finding once and tersely (id, file:line, rule, problem, suggested change), without restating context or praise. End with:
+Start with the **header**: one `FIELD: value` per line, before anything else, nothing else on those lines. The hooks read only the header, and a hook denies a hand-back whose header is missing or wrong (it says what to fix; hand back again with the header first):
+
+| Role | Header lines |
+|---|---|
+| every role | `STATUS: DONE`, `STATUS: CHECKPOINT` or `STATUS: BLOCKED` (first line) |
+| qa-planner (DONE) | `QUESTIONS: Q1 Q2` (open questions for the user) or `QUESTIONS: none` |
+| spec-reviewer (DONE) | `VERDICT: APPROVE` or `VERDICT: CHANGES REQUESTED`; `QUESTIONS: ...` as above |
+| code-reviewer (DONE) | `VERDICT: ...`; with CHANGES REQUESTED, `FIX-QA: F1 F3` and `FIX-DEVELOPER: F2` (must-fix finding ids per route, `none` if none) |
+| developer | `NEEDS-TEST: <what to test>`, only when a test is needed |
+
+Then your role's report, in the **Full** style of the global `CLAUDE.md` 「輸出」: fragments are fine, one fact per line, no preamble, no recap of the assignment, no praise; code, paths, commands, error messages, test names and numbers stay verbatim. Keep it short: the orchestrator re-reads every report on each later request. Long material goes into the files you were asked to write, not into the report. developer and qa: at most about 1,500 characters (status, pass/fail counts, files changed, open problems). Reviewers: the orchestrator passes your findings on verbatim, so write each finding once and tersely (id, file:line, rule, problem, suggested change), without restating context or praise. End with:
 
 - **Effort:** tool calls (approx.), test runs, minutes from your start `date`.
 - **Friction:** anything that wasted time or tokens (unclear instructions, missing notes, blocked commands, retries), one line each. "None" if none.

@@ -21,6 +21,15 @@ import time
 STALE_SECONDS = 2 * 3600
 
 
+
+def flowLocal(worktree):
+	"""The topic's recorded flow mode (worker-control.py writes .hook-only/flow-mode at launch), else the env."""
+	try:
+		with open(os.path.join(worktree, ".hook-only", "flow-mode"), encoding="utf-8") as f:
+			return f.read().strip() == "local"
+	except OSError:
+		return os.environ.get("FLOW_INTEGRATION") == "local"
+
 def git(cwd, *args):
 	result = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True)
 	return result.stdout.strip() if result.returncode == 0 else ""
@@ -63,9 +72,17 @@ def current(hookOnly):
 		if "error" in state:
 			lines.append(f"now: {os.path.basename(path)[:-5]} · budget state error: {state['error']}")
 			continue
-		elapsed = now - float(state.get("started") or now)
-		lines.append(f"now: {state.get('agent_type', '?')} · {minutes(elapsed)} of {state.get('minutes', '?'):g} min"
-			+ (f" · phase {state['phase']}" if state.get("phase") else ""))
+		# A gate holding the agent (qg_common.markWait) is hook time: the agent's own clock stops at
+		# the wait's start, as the budget hook counts it once the wait ends.
+		wait = state.get("hook_wait") or {}
+		since = float(wait.get("since") or now)
+		elapsed = since - float(state.get("started") or since)
+		line = f"now: {state.get('agent_type', '?')} · {minutes(elapsed)} of {state.get('minutes', '?'):g} min"
+		if wait:
+			line += f" · waiting for {wait.get('what', 'a hook')} {minutes(now - since)}"
+			if wait.get("max_seconds"):
+				line += f" (limit {minutes(float(wait['max_seconds']))})"
+		lines.append(line)
 	return lines
 
 
@@ -98,7 +115,8 @@ def gitSummary(worktree):
 	# origin/HEAD is often unset (remote added by hand), and the default branch may be main or
 	# master; without a base every branch looked like "0 commit(s)".
 	base = ""
-	for ref in ("origin/HEAD", "origin/main", "origin/master"):
+	refs = ("main", "master") if flowLocal(worktree) else ("origin/HEAD", "origin/main", "origin/master")
+	for ref in refs:
 		base = git(worktree, "merge-base", "HEAD", ref)
 		if base:
 			break

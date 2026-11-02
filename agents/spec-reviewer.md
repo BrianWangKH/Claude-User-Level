@@ -8,6 +8,17 @@ tools: Read, Grep, Glob, Bash
 skills:
   - agent-common
   - spec-reviewer-notes
+hooks:
+  PreToolUse:
+    - matcher: "SubagentHandback"
+      hooks:
+        - type: command
+          command: "python3 ~/.claude/hooks/report-check.py"
+  PostToolUse:
+    - matcher: "SubagentHandback"
+      hooks:
+        - type: command
+          command: "python3 ~/.claude/hooks/flow-next.py report"
 ---
 
 You are the spec reviewer. Follow `agent-common`. Never modify files; a hook reports any change you make. Report `BLOCKED` early if the inputs are missing or contradict each other so badly that a checklist review makes no sense.
@@ -28,4 +39,4 @@ In later rounds, check each previous finding first and say whether it is resolve
 
 ## Report
 
-A verdict, APPROVE or CHANGES REQUESTED, then numbered findings: the rule or case ID, what is missing or weak, and a suggested case. Questions for the user in a separate list.
+Header (agent-common, Report): `STATUS: DONE`, `VERDICT: APPROVE` or `VERDICT: CHANGES REQUESTED`, and `QUESTIONS:` naming the questions for the user (`Q1 Q2`) or `none`. Then numbered findings: the rule or case ID, what is missing or weak, and a suggested case; then each question as `Q1: ...`.

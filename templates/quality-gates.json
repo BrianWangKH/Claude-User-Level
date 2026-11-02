@@ -1,0 +1,20 @@
+{
+  "_comment": "Copy to <repo>/.claude/quality-gates.json to turn on crap-gate.py (developer stop + commit) and mutation.py (code reviewer). Per language: extensions; coverage: command that writes the coverage file {report} (LCOV, or Go coverprofile with coverage_format gocover); test: fail-fast test command for mutants (auto-merge.py, local mode, also runs it as the full suite before merging); checks (optional, local mode): more completion checks auto-merge.py runs after test, same cwd, env and placeholders (format, lint): each an argv list (passes on exit 0), or {\"argv\": [...], \"empty_output\": true} that also fails on any output (e.g. [\"gofmt\", \"-l\", \".\"]); a failure refuses the merge, so the orchestrator doesn't run them by hand; cwd: where both run; env: extra variables ({repo}: this checkout, also from a scratch copy); invalid_exit_codes / invalid_patterns: results that mean the mutant didn't build. select (optional, Python with pytest-cov 7.1+): {\"kind\": \"pytest-contexts\", \"pytest\": the pytest command without paths, \"python\": the project's Python (it reads the coverage data), \"fallback\": tests for a line no test context covers, {component} = the path's first directory}: mutation runs only the tests that executed each mutated line, and a later scan after test-only changes reruns only what they can affect. red_invalid_patterns: output that means the branch's first tests commit fails for the wrong reason (crap-gate wants it red only because the implementation is missing; a missing module or name is fine). exclude: paths never checked (guard-paths tests and qaConfig are added). scratch_exclude: what the mutation copy leaves out (\"dir/\" from the root, a bare name anywhere). auto_merge_hold (local mode): paths that stop auto-merge.py for a person's review, on top of ~/.claude/hooks/auto-merge-hold.json (e.g. data config). limits: overrides of ~/.claude/hooks/quality-defaults.json. The hooks read this file (and guard-paths.json) as committed at the diff base, never the working tree: a change takes effect once merged. Commands run in bwrap (~/.claude/hooks/qg_sandbox.json): no network, $HOME empty except the configured tool and cache paths, so use installed tools and offline flags (uv run --no-sync).",
+  "languages": {
+    "python": {
+      "extensions": [".py"],
+      "coverage": ["uv", "run", "--no-sync", "pytest", "-q", "-p", "no:cacheprovider", "--cov=<package>", "--cov-branch", "--cov-report=lcov:{report}"],
+      "coverage_format": "lcov",
+      "test": ["uv", "run", "--no-sync", "pytest", "-q", "-x", "-p", "no:cacheprovider"],
+      "checks": [["uv", "run", "--no-sync", "ruff", "format", "--check", "."], ["uv", "run", "--no-sync", "ruff", "check", "--no-cache", "."]],
+      "invalid_exit_codes": [2, 3, 4, 5],
+      "red_invalid_patterns": ["SyntaxError", "IndentationError"],
+      "select": {"kind": "pytest-contexts", "pytest": ["uv", "run", "--no-sync", "pytest", "-q", "-p", "no:cacheprovider"],
+        "python": ["uv", "run", "--no-sync", "python"], "fallback": "{component}/tests"}
+    }
+  },
+  "exclude": [],
+  "scratch_exclude": [".venv/", ".hook-only/", ".git/", "plans/", "__pycache__"],
+  "auto_merge_hold": [],
+  "limits": {}
+}

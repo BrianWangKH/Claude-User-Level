@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Check that this worktree can merge origin's default branch. The sandbox can't run the merge
+# Check that this worktree can merge the integration branch (base-ref.sh: origin's default branch, or
+# the local main in local mode). The sandbox can't run the merge
 # itself (git can't rewrite files under protected paths such as .claude/skills), so the
 # merge-origin hook re-runs this script outside the sandbox with --merge, which repeats every
 # check and then runs `git merge --no-ff --no-commit`. Uses the last fetch (skill pr-conflict).
@@ -23,17 +24,17 @@ commonDir=$(git rev-parse --path-format=absolute --git-common-dir);
 [ "${gitDir}" != "${commonDir}" ] || fail "run this in a feature worktree, not the main checkout";
 branch=$(git symbolic-ref --quiet --short HEAD) || fail "HEAD is detached";
 
-base=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null);
-if [ -z "${base}" ]; then
-	for candidate in origin/master origin/main; do
-		git rev-parse --verify --quiet "${candidate}" >/dev/null && base=${candidate} && break;
-	done
-fi
-[ -n "${base}" ] || fail "cannot find origin's default branch";
+base=$(bash ~/.claude/skills/feature-flow/base-ref.sh) || fail "cannot find the integration branch (base-ref.sh)";
 
 [ ! -e "${gitDir}/MERGE_HEAD" ] || fail "a merge is already in progress; resolve or abort it first";
-# Untracked PR descriptions are expected; anything else could be overwritten or lost by the merge.
-leftovers=$(git status --porcelain --untracked-files=all | grep -v -E '^\?\? PR_DESCRIPTION[^/]*\.md$');
+# Untracked PR descriptions are expected, and untracked character devices are sandbox placeholders
+# (empty /dev/null mounts over protected paths; feature-flow SKILL.md). Anything else could be
+# overwritten or lost by the merge. Placeholders are matched by type, never by name.
+leftovers=$(git status --porcelain --untracked-files=all | grep -v -E '^\?\? PR_DESCRIPTION[^/]*\.md$' |
+	while IFS= read -r line; do
+		[ "${line#\?\? }" != "${line}" ] && [ -c "${line#\?\? }" ] && continue;
+		printf '%s\n' "${line}";
+	done);
 if [ -n "${leftovers}" ]; then
 	echo "${leftovers}";
 	fail "working tree is not clean; commit or remove these first";

@@ -16,11 +16,14 @@ Checkout (checked when this skill loaded): !`bash ~/.claude/skills/feature-flow/
 
 If no result appears above, run `bash ~/.claude/skills/feature-flow/where.sh` yourself.
 
+Check `plans/<topic>.md` with the Read tool: Bash runs in the sandbox, which hides `plans/` (an `ls plans/` shows it empty although the plan is there).
+
 | Where | Plan | Do |
 |---|---|---|
 | main checkout | — | Stop: planning is `/repo-plan`. Never develop here unless the user explicitly asks for it. |
 | worktree | `plans/<topic>.md` missing or lacks scope / rules / decisions | Stop and tell the user to plan it from the main checkout. Don't guess. |
-| worktree | plan ready, argument `merge` | Load `agents.md` and `merge.md` (resolve conflicts with the default branch) instead of the class steps. |
+| worktree | plan ready, argument `merge`, or worker-control.py's merge prompt (`Merge mode:`) | Load `agents.md` and `merge.md` (resolve conflicts with the default branch) instead of the class steps; after a compaction or a resume, load those two again, not the class steps. |
+| worktree | plan ready, the check above says `scripted flow: on` (`"flow": "scripted"`) | Load only `scripted.md` and do what `.hook-only/flow/next.md` says; the class steps are not loaded. |
 | worktree | plan ready | Load the steps for its class, then follow them together with the rules below. |
 
 The step files sit next to this file, outside the working directory, where the Read tool can't reach. Load the class's files with one Bash call: `cat ~/.claude/skills/feature-flow/<file> ~/.claude/skills/feature-flow/<file>`. After a compaction they are gone from your context (only this file is re-attached): load them again the same way before the next step.
@@ -55,16 +58,17 @@ You decide, and tell the user why:
 
 1. Update the project's TODO yourself: the developer's "TODO changes" plus the reviewer's follow-ups. Agents never edit it, so parallel branches rarely conflict there.
    Search TODO for this topic (feature name, class names, notes like "decide when doing X") and tick or reword every matching line, including follow-ups that earlier branches left for this topic.
-2. In one response, the project's completion check (project-flow) and `git status --short`. Then commit with explicit paths, in logical commits (e.g. tests, implementation, TODO); never stage files the project marks as placeholders.
+2. In one response, the project's completion check (project-flow) and `git status --short`. In local mode (`FLOW_INTEGRATION=local`) with a `.claude/quality-gates.json`, skip the completion check: auto-merge runs the repo's `test` and `checks` (format, lint) in the sandbox before merging and refuses on a failure, so run only `git status --short`. Then commit with explicit paths, in logical commits (e.g. tests, implementation, TODO). Untracked entries that are character devices are sandbox placeholders (empty `/dev/null` mounts over protected paths such as `.bash_profile`, `.zshrc`, `.mcp.json`, `.vscode`, `.claude/hooks`, `.claude/agents`; they appear in the session's own project directory): not changes, never staged. Check with `find <path> -maxdepth 0 -type c`.
 3. After the last commit, in one response:
    - write `PR_DESCRIPTION.md` (untracked) **in English**, like commit messages, even when the plan and the conversation are in Traditional Chinese: changes, intentional behaviour differences, test coverage, what isn't automated, manual verification steps, follow-ups, the PR attribution line. If a commit is added later, update it.
    - complete `## Cost` and `## Friction`.
-   - check for conflicts without creating a commit: `bash ~/.claude/skills/pr-conflict/pr-conflict.sh <topic> --local` (uses the last fetch; the worktree can't fetch). Output starts with `CONFLICT:`: follow `merge.md` before pushing. `OK`: no merge, even if the default branch moved.
+   - check for conflicts without creating a commit: `bash ~/.claude/skills/pr-conflict/pr-conflict.sh <topic> --local` (uses the last fetch; the worktree can't fetch). Output starts with `CONFLICT:`: load `merge.md` (`cat ~/.claude/skills/feature-flow/merge.md`, plus `agents.md` if your class didn't load it) and follow it before pushing. `OK`: no merge, even if the default branch moved.
 4. Give the user the push command (worktrees never push themselves). Never merge.
 5. Tell the user: if the PR later shows conflicts, run `/pr-conflict <topic>` from the main checkout; after the PR is merged, run `/finish-worktree <topic>` from the main checkout.
 
 ## Practical notes
 
+- **Your own text:** in a headless worker nobody reads it until the run ends, so write it in the **Full** style (global `CLAUDE.md` 「輸出」). The `STATUS:` / `PHASE:` lines, plan edits, commit messages and `PR_DESCRIPTION.md` keep their normal form. In a desktop session with the user present, use Lite.
 - **Fewer requests:** every request re-reads your whole context. Put independent tool calls in one response (several Bash, Edit or Read calls in one response cost one request; don't chain commands with `&&` or `;`, that gets blocked); Read a file once and don't re-read what is already in your context; don't poll. In a headless worker the conversation is compacted at the phase boundaries (test-first.md), so earlier reports and outputs don't stay.
 - Each round can take 8–35 minutes. Run agents in the background and don't poll.
 - Keep branches as small as the user agrees to; cost grows with rounds and with how much each agent reads. Every agent step resends its whole context, even when it is "just running tests".

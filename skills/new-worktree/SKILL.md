@@ -1,11 +1,11 @@
 ---
 name: new-worktree
-description: Create the feature branch and its git worktree for a planned topic from a fresh fetch of origin, then write the plan into it. Main checkout only.
+description: Create the feature branch and its git worktree for a planned topic from the integration branch (a fresh fetch of origin, or the local main in local mode), then write the plan into it. Main checkout only.
 when_to_use: From skill repo-plan, once scope and decisions are settled with the user.
 argument-hint: "<type>/<scope>/<topic>"
 ---
 
-A hook fetches origin when this skill is invoked; the script refuses if that fetch failed or is stale.
+A hook fetches origin when this skill is invoked; the script refuses if that fetch failed or is stale. In local mode (`FLOW_INTEGRATION=local`) there is no fetch: the branch starts from the local main.
 
 1. Run, with the branch from the arguments:
    ```bash

@@ -7,9 +7,11 @@ SubagentStart: claim the budget dispatch-guard.py parsed from the dispatch promp
   under .hook-only/budget/<agent_id>.json (agents can read it but not edit it; see hookonly.py).
   No pending budget: fall back to the time-only default in budget-defaults.json. A resume fires
   SubagentStart again, so every round is claimed and timed anew.
-PreToolUse (subagents only): deny the tool call once the round has used
-  - 80% of its time, USD or tokens while phase is "checkpoint" -> stop and report CHECKPOINT
-  - 100% in any phase -> stop and report
+PreToolUse (subagents only): deny the tool call once the round has used budget_headroom (budget-defaults.json)
+  times its time, USD or tokens -> stop and report CHECKPOINT. The budget is the estimate of the work; the
+  agent aims to finish within it and the headroom lets a modest overrun finish, so the history records
+  the real need instead of a round cut at 80% of a mean estimate (2026-11-01: 17-18 of 33 replayed
+  rounds stopped that way). The old "phase" (checkpoint / full) is stored but no longer read.
   SubagentHandback (the tool a background subagent returns its report with) is always allowed: it
   is the way out, and denying it only makes the agent retry and burn requests (seen 2026-10-24: two
   denied handbacks, then the agent ended its turn, SubagentStop deleted the state, and the third
@@ -81,7 +83,7 @@ def deny(reason, data=None):
 def loadConfig():
 	with open(DEFAULTS_FILE, encoding="utf-8") as f:
 		config = json.load(f)
-	return config["minutes"], {**TOKEN_WEIGHTS, **config.get("token_weights", {})}
+	return config["minutes"], {**TOKEN_WEIGHTS, **config.get("token_weights", {})}, float(config["budget_headroom"])
 
 
 def stateDirFor(data):
@@ -169,16 +171,19 @@ def onStart(data, budgeted, weights):
 			"usd": float(given["usd"]) if given.get("usd") else None,
 			"phase": given.get("phase") or "checkpoint",
 			"source": os.path.basename(budgetFile),
+			"raw_minutes": given.get("raw_minutes"),
+			"raw_usd": given.get("raw_usd"),
 		}
 		os.remove(budgetFile)
 		break
 	# cost-history.py rows reads these fields: the estimate side of the Cost table.
 	logEvent(data, "budget: " + budget["source"], {"budget_minutes": budget["minutes"],
-		"budget_usd": budget.get("usd"), "budget_source": budget["source"]})
+		"budget_usd": budget.get("usd"), "budget_source": budget["source"],
+		"raw_minutes": budget.get("raw_minutes"), "raw_usd": budget.get("raw_usd")})
 	writeState(data, budget, weights)
 
 
-def onPreToolUse(data, budgeted, weights):
+def onPreToolUse(data, budgeted, weights, headroom):
 	agentType = data.get("agent_type") or ""
 	agentId = data.get("agent_id") or ""
 	if agentType not in budgeted or not agentId:
@@ -211,10 +216,9 @@ def onPreToolUse(data, budgeted, weights):
 			if unpriced:
 				detail += f" ({unpriced} requests of a model missing from prices.json not counted)"
 
-	if ratio >= 1:
-		deny(f"Budget used up ({detail}). Stop now and report: status CHECKPOINT, what is done, what you tried, what remains, what finishing would cost.", data)
-	if ratio >= 0.8 and budget.get("phase") != "full":
-		deny(f"80% of the budget used ({detail}). Stop at a clean point and report CHECKPOINT: what is done, what you tried, your current hypothesis, what remains, what finishing would cost.", data)
+	# cost-history.py marks a round "budget-stopped" by this message's start ("Budget used up").
+	if ratio >= headroom:
+		deny(f"Budget used up: {ratio:.0%} of the budget ({detail}; the stop is at {headroom:.0%}). Stop now and report CHECKPOINT: what is done, what you tried, your current hypothesis, what remains, what finishing would cost.", data)
 
 
 def removeStaleStates(stateDir):
@@ -259,7 +263,7 @@ def main():
 		logEvent(data)
 	if event == "SubagentStart":
 		try:
-			onStart(data, *loadConfig())
+			onStart(data, *loadConfig()[:2])
 		except Exception as error:
 			writeErrorState(data, error)
 		removeStaleStates(stateDirFor(data))
@@ -270,7 +274,7 @@ def main():
 			logEvent(data, "allow: " + data.get("tool_name"))
 			return
 		try:
-			budgeted, weights = loadConfig()
+			budgeted, weights, headroom = loadConfig()
 		except Exception as error:
 			deny(f"Budget guard can't read {DEFAULTS_FILE} ({error}). Stop and report BLOCKED with this message.", data)
 		stateFile = os.path.join(stateDirFor(data), f"{data.get('agent_id')}.json")
@@ -280,7 +284,7 @@ def main():
 					f.seek(0)
 					deny(f"Budget guard failed at start ({json.load(f)['error']}). Stop and report BLOCKED with this message.", data)
 		try:
-			onPreToolUse(data, budgeted, weights)
+			onPreToolUse(data, budgeted, weights, headroom)
 		except SystemExit:
 			raise
 		except Exception as error:

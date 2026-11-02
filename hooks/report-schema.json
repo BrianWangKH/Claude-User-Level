@@ -1,0 +1,21 @@
+{
+  "_note": "Report header every flow agent's hand-back starts with (report_schema.py parses it, report-check.py enforces it at PreToolUse SubagentHandback, flow-next.py reads only these fields). Header = the report's first lines, one `FIELD: value` per line, up to the first line that isn't a field. `required`: always; `when_done`: when STATUS is DONE; `when_changes`: when VERDICT is CHANGES REQUESTED, at least one of these fields not `none`. `max_denials`: hand-backs denied per agent before report-check lets one through (flow-next then stops with needs-decision), so a model that can't comply doesn't loop.",
+  "max_denials": 2,
+  "fields": {
+    "STATUS": {"pattern": "^(DONE|CHECKPOINT|BLOCKED)$", "example": "DONE"},
+    "VERDICT": {"pattern": "^(APPROVE|CHANGES REQUESTED)$", "example": "APPROVE"},
+    "QUESTIONS": {"pattern": "^(none|Q\\d+(?:[ ,]+Q\\d+)*)$", "example": "none"},
+    "FIX-QA": {"pattern": "^(none|[A-Za-z]*\\d+(?:[ ,]+[A-Za-z]*\\d+)*)$", "example": "F1 F3"},
+    "FIX-DEVELOPER": {"pattern": "^(none|[A-Za-z]*\\d+(?:[ ,]+[A-Za-z]*\\d+)*)$", "example": "F2"},
+    "NEEDS-TEST": {"pattern": "^.+$", "example": "a test that executes research/x.py:12"},
+    "DECISION": {"pattern": "^(answer|ask-user|must-fix|todo|none)\\b.*$", "example": "none", "repeat": true}
+  },
+  "roles": {
+    "qa-planner": {"required": ["STATUS"], "when_done": ["QUESTIONS"]},
+    "spec-reviewer": {"required": ["STATUS"], "when_done": ["VERDICT", "QUESTIONS"]},
+    "qa": {"required": ["STATUS"]},
+    "developer": {"required": ["STATUS"], "optional": ["NEEDS-TEST"]},
+    "code-reviewer": {"required": ["STATUS"], "when_done": ["VERDICT"], "when_changes": ["FIX-QA", "FIX-DEVELOPER"]},
+    "flow-judge": {"required": ["DECISION"]}
+  }
+}

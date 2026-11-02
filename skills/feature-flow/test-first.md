@@ -14,7 +14,7 @@ Wiring: every entry point a user runs (a CLI, `python -m <module>`, a script) ge
 ## 2. Tests
 
 1. Spawn `qa` pointing at the reviewed test plan.
-2. Run the tests yourself (project-flow). New tests must fail only on missing implementation, with no parse errors; existing tests must pass.
+2. Run the tests yourself (project-flow). New tests must fail only on missing implementation, with no parse errors; existing tests must pass. In repos with `.claude/quality-gates.json`, crap-gate enforces the red at the commit: it refuses the branch's first tests commit when the suite passes or fails for a reason in the language's `red_invalid_patterns`; send its message to a fresh `qa`.
 3. Commit the test files with explicit paths: "Add tests for <feature>".
 4. Append the commit hash to `## QA commits` in `plans/<topic>.md`. Later steps always take the hash from there, never from `git log`. In a headless worker, make this Edit and the phase's `## Cost` / `## Friction` Edit (step 5) in the same response: one request instead of two.
 5. **Headless worker only** (`CLAUDE_WORKER_MINUTES` is set): end your turn here. With the phase's `## Cost` and `## Friction` rows written, send a last message whose first line is `PHASE: tests-done`, followed by what is done and the next step (the worker-stop hook refuses it while an agent still runs). The wrapper compacts the conversation and resumes you: re-read `plans/<topic>.md` and continue with step 3.
@@ -23,16 +23,20 @@ Wiring: every entry point a user runs (a CLI, `python -m <module>`, a script) ge
 
 1. Spawn `developer` with the plan paths. The working tree should be clean (tests just committed); `agent-guard` adds a warning if it isn't. Fix rounds use a fresh `developer` with the findings verbatim (agents.md, "Fresh agent or resume").
 2. If it reports a test as wrong, judge it against the plan: either the test goes back to `qa`, or the developer complies.
+   If its report ends with `NEEDS-TEST: <what>` (the quality gate wants coverage only a test can give), send that line verbatim to a fresh `qa`, verify and commit the tests as in section 2, then a fresh `developer` finishes.
 3. Verify yourself:
    - `agent-guard` checks every developer and qa round on its own (refs, and the paths in the project's `.claude/guard-paths.json`). An ALERT denies the call it arrives on, then every agent dispatch and `git commit` / `git merge` until the user answers: tell the user and stop. In a headless worker run, end the run with `STATUS: blocked` and quote the ALERT in full with its cause (`wt resume` lifts the hold). A reminder (e.g. a shared file changed) arrives as context: mention it to the user and have the code reviewer look at that diff
    - without `.claude/guard-paths.json`, only refs are checked; then also run `bash ~/.claude/skills/feature-flow/verify-untouched.sh <latest qa-commit> <protected paths...>`, which must exit 0
-   - the suite passes, plus any project "done" checks in project-flow
+   - the suite passes, plus any project "done" checks in project-flow (crap-gate refuses an implementation commit whose suite is red)
+   - `crap-gate` (repos with `.claude/quality-gates.json`) checks the developer's changed functions when it hands back a `DONE` report or stops, and sends it back up to 3 times (a `CHECKPOINT` or `BLOCKED` report isn't checked: handle it by agents.md "When an agent returns"); after that it raises an agent-guard ALERT (same hold as above). It checks `git commit` again and denies a commit that breaks the limits: send the listed items verbatim to a fresh `developer` (a needed test to `qa` first)
 4. Commit the implementation with explicit paths: "Implement <feature>".
 5. **Headless worker only:** as in step 2.5 (the `## Cost` / `## Friction` Edit in the same response as the commit), with the first line `PHASE: dev-done`; continue with step 4.
 
 ## 4. Review
 
-1. Spawn `code-reviewer` with the Agent tool, in the background, with a prompt holding only the `Budget:` line: the dispatch-guard hook replaces the prompt with the fixed plan-blind review prompt.
+1. Spawn `code-reviewer` with the Agent tool, in the background, with a prompt holding only the `Estimate:` line: the dispatch-guard hook replaces the prompt with the fixed plan-blind review prompt and the modelled `Budget:` line.
+
+   In repos with `.claude/quality-gates.json` the reviewer doesn't run mutants itself: `mutation.py` scans the changed lines in the background from its start, runs the 3–5 mutants it picks, and holds its hand-back until the scan is done, returning the survivors to judge: the report you get already holds that judgement. The scan takes several minutes of wall time; the hook takes the wait out of the reviewer's time budget, so estimate only the review itself.
 
    While a reviewer runs (every round), don't change files git tracks or reports as untracked, and don't run other agents; discussing, reading and editing `plans/` are fine (it is gitignored). `agent-guard` compares snapshots taken at the reviewer's start and stop, and any change in between counts as the reviewer's.
 2. When it completes, record its agent id under `## Reviewer` in `plans/<topic>.md`. Later rounds take the id from there.
@@ -41,7 +45,7 @@ Wiring: every entry point a user runs (a CLI, `python -m <module>`, a script) ge
 5. Route must-fix findings:
    - test gaps → a fresh `qa` with the findings verbatim. Verify the new tests fail for the right reason, commit them, append the hash to `## QA commits`, **before** the developer round.
    - implementation issues → a fresh `developer` with the findings verbatim.
-6. Later rounds: SendMessage to the id under `## Reviewer` ("fixed, please re-review"). Don't paraphrase the plan to it. If resuming fails, stop and tell the user; don't start a new reviewer on your own.
+6. Later rounds of the same review (its own findings fixed): SendMessage to the id under `## Reviewer` ("fixed, please re-review"); it remembers its findings, while a new reviewer gets only the fixed prompt and would review the whole diff again. Don't paraphrase the plan to it. If resuming fails, stop and tell the user; don't start a new reviewer on your own. A new round after the plan gained rules (new code, often hours later) starts at step 1 with a new reviewer; record its id under `## Reviewer`.
 7. Repeat until APPROVE. Collect the reviewer's follow-ups for the TODO update.
 
 For a true blind review (a fresh reviewer every round, never resumed), see `~/.claude/docs/blind-review.md`; use it only when the user asks.
