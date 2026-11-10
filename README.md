@@ -10,6 +10,10 @@ A Claude Code home configuration (`~/.claude`) that turns Claude Code into a sma
 - **Test-first subagent team.** A test planner, spec reviewer, QA, developer and a plan-blind code reviewer, each limited to its own job.
 - **Hook-enforced rules.** Guards block out-of-role edits, quality gates check complexity, coverage and mutation results, and budgets stop runaway runs.
 - **Real-data verification.** A finished branch is checked by scripted commands and an independent verifier agent before it can merge.
+- **Executing separated from judging.** In scripted mode a hook picks each next step and the orchestrator only carries it out; what the hook can't decide goes to a read-only judge agent, then to you.
+- **Agents can't grade or change their own work.** Each subagent's changes are checked before and after its run, malformed reports are refused at hand-back, acceptance checks fail closed, and the verifier is started by a hook.
+- **Agent proposes, trusted code executes.** The code reviewer picks a few targeted mutants; a hook runs them and reports each result.
+- **Budgets fitted on history.** Each agent's budget comes from a model fitted on past estimate-vs-actual runs, with a replay tool to test settings before changing them.
 - **Hands-off local mode.** Finished topics are verified, merged into your local `main` and cleaned up automatically; queued topics start in turn.
 - **Worker pane.** A side panel showing each worker's progress, spend and pending decisions, with launch / resume / stop controls.
 

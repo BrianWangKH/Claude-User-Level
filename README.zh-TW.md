@@ -10,6 +10,10 @@
 - **測試先行的 subagent 團隊。** 測試規劃、規格審查、QA、開發、看不到計畫的 code reviewer，各自只做自己的工作。
 - **hook 強制規則。** guard 擋下越權的修改，quality gate 檢查複雜度、覆蓋率和 mutation 結果，預算機制防止失控的執行。
 - **真實資料驗證。** 完成的 branch 要先通過腳本檢查和獨立的 verifier agent，才能合併。
+- **執行與判斷分開。** scripted 模式下，hook 決定每一步，指揮只負責執行；hook 無法決定的交給唯讀的 judge agent，再交給你。
+- **agent 不能自己評、自己改。** 每個 subagent 執行前後都檢查它改了什麼，格式錯誤的報告在交回時就被拒絕，驗收檢查 fail closed，verifier 由 hook 啟動。
+- **agent 提出，可信程式執行。** code reviewer 挑幾個針對性的 mutant，由 hook 執行並回報每個結果。
+- **從歷史擬合的預算。** 每個 agent 的預算來自用過去估計與實際值擬合的模型，並有回放工具可以在改設定前先測試。
 - **免看管的本地模式。** 完成的 topic 自動驗證、合併進本地 `main` 並收尾；佇列中的 topic 依序開始。
 - **Worker pane。** 側邊面板顯示每個 worker 的進度、花費和待你決定的事，可以啟動、續跑、停止。
 
