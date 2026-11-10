@@ -1,0 +1,2 @@
+- Go (standard library, `go.mod`); tests, format and checks: go test on every package, gofmt -l, go vet (the commands follow the home's Go profile)
+- The quality gates use the home's Go profile (`~/.claude/config/home.json` `toolchains`); `.claude/quality-gates.json` lists only `go`

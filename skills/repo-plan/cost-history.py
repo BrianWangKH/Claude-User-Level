@@ -11,38 +11,39 @@ every command run in a worktree reads that copy.
       Put "invalid" in note for runs that say nothing about estimating (never started, login
       expired, killed by the environment); they are kept but never used for bias.
   bias agent <agent>
-      The estimate model (below) for one agent: its last estimate_window valid rows, any branch.
+      The estimate model (below) for one agent: its last estimate_window_count valid rows, any branch.
   bias branch <type/scope> <class>
-      The model for a whole branch: the last estimate_window valid "branch" rows of the same type/scope;
+      The model for a whole branch: the last estimate_window_count valid "branch" rows of the same type/scope;
       if fewer, filled with the same class, then with any branch.
   estimate branch <type/scope> <class> <usd> <minutes> [--reviews <n>] [--dev-rounds <n>] [--merge]
       A worker run: <usd> and <minutes> are the work itself, without the quality gates' waits. Prints
       the `bias branch` lines, the corrected USD and minutes, plus the hook-wait reserve: <n> code-reviewer
       rounds x the mutation scan wait and <n> developer rounds x the crap-gate wait, each the longest of
-      the last 5 recorded waits of that agent (the `hook wait` notes); none in a repo without
-      .claude/quality-gates.json, where neither gate runs. The class decides which counts apply:
+      the last 5 recorded waits of that agent (the `hook wait` notes); none in a repo with nothing to
+      gate (no .claude/quality-gates.json and no tracked file of a language with a home toolchain
+      profile: gatesOn), where neither gate runs. The class decides which counts apply:
       logic and wiring (test-first) need both (a `Merge review:` round runs no scan: leave it out of
       --reviews), small fix only --dev-rounds, other classes neither. Then the limits worker-control.py
-      derives (x budget_headroom, budget-defaults.json) and the plans/worker/<topic>.json content
+      derives (x budget_headroom_factor, home.json budget) and the plans/worker/<topic>.json content
       (with the class, which crap-gate.py reads). No floors: the headroom and the reserve cover what
       the floors did.
       --merge: a merge run (skill pr-conflict, feature-flow merge.md), estimated on its own: the model
-      comes from the last estimate_window valid "merge" rows of any branch (none yet: the raw estimate), only --dev-rounds applies
+      comes from the last estimate_window_count valid "merge" rows of any branch (none yet: the raw estimate), only --dev-rounds applies
       (a `Merge review:` runs no scan; developer resolves implementation conflicts in any class), and
       the json gets "mode": "merge", which worker-control.py turns into the merge prompt.
       --fix: a fix run (worker-control.py auto-fix, after the real data showed a finished branch wrong): the
-      model comes from the last estimate_window valid "fix" rows of any branch (none yet: the raw estimate);
+      model comes from the last estimate_window_count valid "fix" rows of any branch (none yet: the raw estimate);
       the class's gate waits apply as for the branch, one round of each gated agent the class dispatches unless
       --reviews / --dev-rounds say otherwise (a fix: a qa fixture, one developer round, one review). No "mode" in
       the json: worker-control.py starts the run itself.
   estimate agent <agent> <usd> <minutes> [--resume]
       A subagent round, in a worktree: the agent's model from the history copy and the lines for the
-      dispatch: `Budget:` (the corrected estimate; the hook stops the agent at budget_headroom x it)
+      dispatch: `Budget:` (the corrected estimate; the hook stops the agent at budget_headroom_factor x it)
       and `Estimate:` (the raw numbers, which the hooks record for the bias). A gate's wait is not
-      part of an agent's budget (qg_common.excludeWait takes it out). This branch's own
+      part of an agent's budget (budget_state.excludeWait takes it out). This branch's own
       actual/estimate (the `rows` ratios) is printed for reference only: its rounds were budgeted with
       the history bias already, so multiplying both shrinks twice.
-      The orchestrator doesn't run it to dispatch: dispatch-guard.py applies the same model (applyModel)
+      The orchestrator doesn't run it to dispatch: dispatch_guard.py applies the same model (applyModel)
       to a prompt's `Estimate:` line (`Remaining:` = --resume) and adds the Budget line itself; this
       command only shows the model.
   snapshot <worktree>
@@ -51,7 +52,7 @@ every command run in a worktree reads that copy.
   rows [<checkout>]
       The subagent rounds of a checkout (default: this one) as Cost table rows, from the hooks'
       records: estimate = the dispatch's raw `Estimate:` line (note `est=raw`, the budget in the note),
-      or for older rounds without one the `Budget:` line (not used for bias), as subagent-budget.py
+      or for older rounds without one the `Budget:` line (not used for bias), as subagent_budget.py
       claimed them (.hook-only/budget/events.jsonl),
       actual = subagent-cost.py's this_round.usd and started_at..stopped_at (.hook-only/cost/).
       A round the budget hook stopped (a "Budget used up" or "80% of the budget used" deny in
@@ -67,10 +68,14 @@ every command run in a worktree reads that copy.
       bias is about building a topic, and merges get their own bias (estimate branch --merge). A fix run
       ("mode": "fix", worker-control.py auto-fix) likewise becomes an agent "fix" row (estimate branch --fix).
       It writes <checkout>/.hook-only/imported and refuses a checkout that has one: auto-finish.py imports
-      after an automatic merge, and a later /finish-worktree must not add the rows again.
+      after an automatic merge, and a later /finish-worktree must not add the rows again. The rows are
+      idempotent by content too, for a crash between them and the marker: every row's note ends with
+      `import=<key>` (importKey: a hash of the rows without their date), all rows go in at once (the history
+      rewritten to a file beside it, then renamed over it, under history.tsv.lock, which add holds as well),
+      and an import whose key the history holds already adds nothing and writes the marker.
 
-Estimate model (2026-11-01, replacing a single bias factor and its floor): per metric (USD, minutes), over
-the last estimate_window valid rows with a raw estimate (budget-defaults.json), newest first:
+Estimate model (replacing a single bias factor and its floor): per metric (USD, minutes), over
+the last estimate_window_count valid rows with a raw estimate (home.json budget), newest first:
   fixed = the estimate_fixed_quantile of their actuals (default the median): what a round or run needs
           whatever its size (an agent's set-up, a reviewer's scratch copy and mutants, a worker's start,
           compactions and wrap-up)
@@ -79,7 +84,7 @@ the last estimate_window valid rows with a raw estimate (budget-defaults.json), 
 A single factor scaled small jobs below their fixed part and stopped them (code-reviewer at 8.7 of 5
 minutes; a docs worker run at 4.0 of a 4-minute limit), and a floor only hid that. Replayed over the
 history (skills/repo-plan/estimate-replay.py; a round counts as stopped when its actual exceeds
-budget_headroom x the budget the model would have given from the rows before it): subagent rounds 3 of 96
+budget_headroom_factor x the budget the model would have given from the rows before it): subagent rounds 3 of 96
 stopped (the floored maximum 4; median budget 2.04 x actual, minutes rounded up), worker runs 4 of 32 (the
 weighted mean 15), branch rows 1 of 15 (3). A budget-stopped row is a lower bound of its need; the
 maximum slope takes it as it is. No rows: the raw estimate as it is. Re-run the replay when the window or
@@ -87,16 +92,14 @@ quantile change.
 `estimate agent ... --resume` (the round after a CHECKPOINT): that round already proved the estimate low,
 so the budget is never below the raw estimate of the remaining work (the model may still raise it).
 Below 1 means past estimates were too high; above 1, too low. estimate multiplies by every bias that
-has at least one pair, in full; a metric without pairs stays at x1 and says so. An agent's USD
-without pairs falls back to its tokens bias.
-
-Token unit: rows whose note contains "tok=weighted" count tokens price-weighted (cache reads at a
-tenth; hooks/tokenweights.py), the unit of budgets and of the Cost table's `est wtok`/`actual wtok`
-columns. Older rows summed plain tokens (cache reads in full, about 5-8x larger), so the tokens
-bias uses only "tok=weighted" rows; minutes and USD use every valid row.
+has at least one pair, in full; a metric without pairs stays at x1 and says so.
+The metrics are minutes and USD. The estTok/actTok columns stay in the file for the rows that have them;
+no estimate or bias reads them.
 """
 import csv
+import fcntl
 import glob
+import hashlib
 import json
 import math
 import os
@@ -106,10 +109,14 @@ import subprocess
 import sys
 from datetime import datetime
 
+# The home config next to this skill (skills/repo-plan/ -> config/), not ~: the files this copy belongs to. Only
+# config/, not hooks/lib (homepath): this runs in the sandbox, where hooks/ is closed (README, Changing ~/.claude, item 7).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))), "config"))  # homeconfig
+import homeconfig  # noqa: E402
+
 COLUMNS = ["date", "topic", "branch", "class", "agent", "round", "estTok", "actTok",
 	"estMin", "actMin", "estUsd", "actUsd", "note"]
 WEIGHTS = [5, 4, 3, 2, 1]
-WEIGHTED_MARK = "tok=weighted"
 STOPPED_MARK = "budget-stopped"
 RAW_MARK = "est=raw"
 WAIT_NOTE = re.compile(r"hook wait (\d+(?:\.\d+)?) min excluded")
@@ -122,11 +129,11 @@ MERGE = "merge"
 FIX = "fix"
 GATED_CLASSES = {"code-reviewer": ("logic", "wiring"), "developer": ("logic", "wiring", "small fix", MERGE)}
 COUNT_OPTION = {"code-reviewer": "--reviews", "developer": "--dev-rounds"}
-METRICS = [("tokens", "estTok", "actTok"), ("min", "estMin", "actMin"), ("usd", "estUsd", "actUsd")]
+METRICS = [("min", "estMin", "actMin"), ("usd", "estUsd", "actUsd")]
 
 
 HISTORY = os.path.join(".claude-cost", "history.tsv")
-BUDGET_DEFAULTS = os.path.expanduser("~/.claude/hooks/budget-defaults.json")
+IMPORT_TAG = "import="
 
 
 def gitPath(*args):
@@ -171,16 +178,12 @@ def bias(rows):
 	USD and minutes use only rows whose estimate is the raw one (RAW_MARK). Older rows hold the budget
 	the dispatch was given, already multiplied by the bias and raised to a floor, so actual / budget
 	compounds the bias; and the budget hook caps the actual at that budget, so the ratio stayed below 1
-	and every correction shrank the next budget (2026-10-31: 1 of 48 counted rounds above its budget,
+	and every correction shrank the next budget (1 of 48 counted rounds above its budget,
 	26 of 56 budgets at the floor). A stopped round stays in as a lower bound: its real need was at
 	least what it used, and dropping it removed exactly the rounds that showed an underestimate."""
 	out = {}
 	for name, estKey, actKey in METRICS:
-		if name == "tokens":
-			usable = [r for r in rows if WEIGHTED_MARK in (r.get("note") or "")
-				and STOPPED_MARK not in (r.get("note") or "")]
-		else:
-			usable = [r for r in rows if RAW_MARK in (r.get("note") or "")]
+		usable = [r for r in rows if RAW_MARK in (r.get("note") or "")]
 		pairs = [(number(r[estKey]), number(r[actKey])) for r in usable]
 		pairs = [(e, a) for e, a in pairs if e and a][:len(WEIGHTS)]
 		if pairs:
@@ -200,7 +203,7 @@ def quantile(values, q):
 
 def modelSettings():
 	defaults = loadDefaults()
-	return int(defaults.get("estimate_window", 10)), float(defaults.get("estimate_fixed_quantile", 0.5))
+	return int(defaults["estimate_window_count"]), float(defaults["estimate_fixed_quantile"])
 
 
 def model(rows, window=None, q=None):
@@ -210,8 +213,6 @@ def model(rows, window=None, q=None):
 		window, q = modelSettings()
 	out = {}
 	for name, estKey, actKey in METRICS:
-		if name == "tokens":
-			continue
 		pairs = [(number(r[estKey]), number(r[actKey])) for r in rows if RAW_MARK in (r.get("note") or "")]
 		pairs = [(e, a) for e, a in pairs if e and a][:window]
 		if pairs:
@@ -251,17 +252,67 @@ def newestFirst(rows):
 	return list(reversed(rows))
 
 
+def cleanCell(value):
+	return value.replace("\t", " ").replace("\n", " ")
+
+
+class HistoryLock:
+	"""history.tsv.lock held (flock) while the history is written: an add's append and an import's rewrite never
+	interleave, so neither loses the other's rows."""
+
+	def __init__(self, path):
+		self.path = path + ".lock"
+
+	def __enter__(self):
+		os.makedirs(os.path.dirname(self.path), exist_ok=True)
+		self.handle = open(self.path, "a")
+		fcntl.flock(self.handle, fcntl.LOCK_EX)
+		return self
+
+	def __exit__(self, *exc):
+		fcntl.flock(self.handle, fcntl.LOCK_UN)
+		self.handle.close()
+
+
 def cmdAdd(path, values):
 	if len(values) != len(COLUMNS):
 		sys.exit(f"FAIL: add needs {len(COLUMNS)} values ({' '.join(COLUMNS)}), got {len(values)}")
-	os.makedirs(os.path.dirname(path), exist_ok=True)
-	isNew = not os.path.isfile(path)
-	with open(path, "a", encoding="utf-8", newline="") as f:
-		writer = csv.writer(f, delimiter="\t", lineterminator="\n")
-		if isNew:
-			writer.writerow(COLUMNS)
-		writer.writerow([v.replace("\t", " ").replace("\n", " ") for v in values])
+	with HistoryLock(path):
+		isNew = not os.path.isfile(path)
+		with open(path, "a", encoding="utf-8", newline="") as f:
+			writer = csv.writer(f, delimiter="\t", lineterminator="\n")
+			if isNew:
+				writer.writerow(COLUMNS)
+			writer.writerow([cleanCell(v) for v in values])
 	print(f"OK: added {values[4]} {values[5]} for {values[1]}")
+
+
+def importKey(rows):
+	"""The content key of an import's rows: every column but the date (a rerun on another day is the same
+	import), hashed; the same archive always gives the same rows."""
+	text = "\n".join("\t".join(cleanCell(v) for v in row[1:]) for row in rows)
+	return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def appendAtOnce(path, rows):
+	"""Append rows all at once (the caller holds HistoryLock): the history with the rows is written beside it,
+	then renamed over it, so a crash leaves the old history or the new one, never part of the rows."""
+	old = ""
+	if os.path.isfile(path):
+		with open(path, encoding="utf-8", newline="") as f:
+			old = f.read()
+	if old and not old.endswith("\n"):
+		old += "\n"
+	temporary = f"{path}.{os.getpid()}.tmp"
+	with open(temporary, "w", encoding="utf-8", newline="") as f:
+		f.write(old)
+		writer = csv.writer(f, delimiter="\t", lineterminator="\n")
+		if not old:
+			writer.writerow(COLUMNS)
+		writer.writerows([cleanCell(v) for v in row] for row in rows)
+		f.flush()
+		os.fsync(f.fileno())
+	os.replace(temporary, path)
 
 
 def cmdBias(path, args):
@@ -280,7 +331,7 @@ def cmdBias(path, args):
 
 
 def branchRows(rows, scope, klass):
-	"""Last estimate_window valid "branch" rows of the same type/scope, filled with the same class, then any."""
+	"""Last estimate_window_count valid "branch" rows of the same type/scope, filled with the same class, then any."""
 	window = modelSettings()[0]
 	branchRows = [r for r in rows if r["agent"] == "branch"]
 	prefix = scope.rstrip("/") + "/"
@@ -295,16 +346,19 @@ def branchRows(rows, scope, klass):
 
 
 def loadDefaults():
-	try:
-		with open(BUDGET_DEFAULTS, encoding="utf-8") as f:
-			return json.load(f)
-	except (OSError, ValueError):
-		return {}
+	return homeconfig.load("budget")
 
 
 def gatesOn(checkout):
-	"""True when the repo has quality gates: without .claude/quality-gates.json neither gate runs."""
-	return os.path.isfile(os.path.join(checkout, ".claude", "quality-gates.json"))
+	"""True when the quality gates run in the repo: it has .claude/quality-gates.json, or tracks a file with an
+	extension of a home toolchain profile (config/home.json toolchains), which the gates enable on the profile alone
+	(hooks/lib/qg_common.py detectLanguages, at the diff base plus the branch's changes; the checkout's tracked files stand in for it here)."""
+	if os.path.isfile(os.path.join(checkout, ".claude", "quality-gates.json")):
+		return True
+	profiles = homeconfig.load("toolchains").get("languages") or {}
+	extensions = {e for lang, p in profiles.items() if not lang.startswith("_") for e in p.get("extensions") or []}
+	listed = subprocess.run(["git", "-C", checkout, "ls-files", "-z"], capture_output=True, text=True)
+	return any(os.path.splitext(p)[1] in extensions for p in listed.stdout.split("\0") if p)
 
 
 def recordedWaits(rows, agent):
@@ -330,7 +384,7 @@ def expectedWait(rows, agent):
 def checkoutWait(checkout, agent):
 	"""expectedWait over <checkout>'s history (the worktree copy) plus its own rounds so far.
 
-	dispatch-guard.py calls this before a code-reviewer or developer dispatch in a headless worker run;
+	dispatch_guard.py calls this before a code-reviewer or developer dispatch in a headless worker run;
 	0 in a repo without quality gates."""
 	if not gatesOn(checkout):
 		return 0.0
@@ -376,7 +430,8 @@ def waitReserve(rows, checkout, klass, counts):
 				" judged from the plan (0 if none)")
 		n = counts[agent]
 		if not gates:
-			lines.append(f"hook wait, {agent}: no .claude/quality-gates.json, no gate wait")
+			lines.append(f"hook wait, {agent}: nothing to gate (no .claude/quality-gates.json, no tracked file of a "
+				"profiled language), no gate wait")
 			continue
 		wait, seen = expectedWait(rows, agent)
 		if not seen:
@@ -445,12 +500,9 @@ def cmdEstimate(path, args):
 		# run locally while the agent waits).
 		newMin = math.ceil(newMin + reserve)
 		print(f"estimate: ${newUsd:g}, {newMin} min (work + {reserve:g} min hook wait)")
-		headroom = loadDefaults().get("budget_headroom")
-		if headroom:
-			print(f"limits (worker-control.py, x{headroom:g}): {math.ceil(newMin * headroom)} min,"
-				f" ${newUsd * headroom:.2f} --max-budget-usd")
-		else:
-			print("limits: worker-control.py applies budget_headroom (budget-defaults.json unreadable here)")
+		headroom = float(loadDefaults()["budget_headroom_factor"])
+		print(f"limits (worker-control.py, x{headroom:g}): {math.ceil(newMin * headroom)} min,"
+			f" ${newUsd * headroom:.2f} --max-budget-usd")
 		# raw_minutes / raw_usd: worker-control.py records them per run, so the branch bias compares
 		# actual (without hook waits) with the raw estimate (without them too).
 		# "class" stays the topic's class in a merge run too: crap-gate.py reads it (presentation).
@@ -463,16 +515,15 @@ def cmdEstimate(path, args):
 	agent = args[1]
 	mine = [r for r in rows if r["agent"] == agent]
 	fitted = model(mine)
-	# No tokens-for-USD fallback: the tokens pairs are old rows measured against corrected budgets, the
-	# same compounding the RAW_MARK rule removes; without raw pairs the raw estimate is used as it is.
+	# Without raw pairs the raw estimate is used as it is.
 	print(describeModel(f"history, {agent}", fitted) + (" (resume: not below the raw estimate)" if resume else ""))
 	here = [{"estUsd": r["estUsd"], "actUsd": r["actUsd"], "estMin": r["estMin"], "actMin": r["actMin"],
-		"estTok": "", "actTok": "", "note": r["note"]} for r in subagentRounds(checkouts()[0]) if r["agent"] == agent]
+		"note": r["note"]} for r in subagentRounds(checkouts()[0]) if r["agent"] == agent]
 	print(describe(f"this branch, {agent} (reference only, not applied)", list(reversed(here))))
 	newUsd, newMin = applyModel(usd, minutes, fitted, resume)
 	print(f"modelled: ${newUsd:g}, {newMin} min")
-	# The lines go into the dispatch verbatim: dispatch-guard.py matches the Budget line only when it
-	# stands alone (a sentence after it on the same line was denied twice on 2026-10-31). The Estimate
+	# The lines go into the dispatch verbatim: dispatch_guard.py matches the Budget line only when it
+	# stands alone (a sentence after it on the same line was denied). The Estimate
 	# line carries the raw numbers to the history, so the bias compares actual with them.
 	print("Paste these three lines into the dispatch as they are:")
 	print(f"Budget: {newMin} min, ${newUsd:g}")
@@ -480,7 +531,7 @@ def cmdEstimate(path, args):
 	print(f"Estimate: {minutes:g} min, ${usd:g}")
 
 
-# The second dispatch line; dispatch-guard.py's fixed review prompt uses the same text.
+# The second dispatch line; dispatch_guard.py's fixed review prompt uses the same text.
 RULE_LINE = ("Follow the budget rules in `agent-common`: aim to finish within the budget, `CHECKPOINT`"
 	" when the rest clearly won't fit, `BLOCKED` early.")
 
@@ -589,7 +640,7 @@ def cmdRows(args):
 		print(f"| {r['agent']} | {r['round']} | {r['estUsd']} | {r['actUsd']} | {r['estMin']} | {r['actMin']} | {r['note']} |")
 	for agent in sorted({r["agent"] for r in rounds}):
 		mine = [{"estUsd": r["estUsd"], "actUsd": r["actUsd"], "estMin": r["estMin"], "actMin": r["actMin"],
-			"estTok": "", "actTok": "", "note": r["note"]} for r in rounds if r["agent"] == agent]
+			"note": r["note"]} for r in rounds if r["agent"] == agent]
 		print(describe(f"this branch, {agent}", list(reversed(mine))))
 
 
@@ -639,14 +690,15 @@ def cmdImport(path, args):
 	marker = os.path.join(checkout, ".hook-only", "imported")
 	if os.path.isfile(marker):
 		sys.exit(f"FAIL: {checkout} was already imported ({marker}); importing again would double its rows")
+	rows = []
 	rounds = subagentRounds(checkout)
 	for r in rounds:
-		cmdAdd(path, [date, topic, branch, klass, r["agent"], r["round"], "", "", r["estMin"], r["actMin"],
+		rows.append([date, topic, branch, klass, r["agent"], r["round"], "", "", r["estMin"], r["actMin"],
 			r["estUsd"], r["actUsd"], r["note"]])
 	allRuns = workerRuns(checkout)
 	for r, c in allRuns:
 		agent = r.get("mode") if r.get("mode") in (MERGE, FIX) else "worker"
-		cmdAdd(path, [date, topic, branch, klass, agent, str(r["run"]), "", "", c["estMin"], c["actMin"],
+		rows.append([date, topic, branch, klass, agent, str(r["run"]), "", "", c["estMin"], c["actMin"],
 			c["estUsd"], c["actUsd"], c["note"]])
 	runs = [(r, c) for r, c in allRuns if r.get("mode") not in (MERGE, FIX)]
 	valid = [(r, c) for r, c in runs if not r["invalid"]]
@@ -659,16 +711,35 @@ def cmdImport(path, args):
 			note += f"; {RAW_MARK}"
 		if not valid:
 			note += "; invalid"
-		cmdAdd(path, [date, topic, branch, klass, "branch", "-", "", "", total("estMin"), total("actMin"),
+		rows.append([date, topic, branch, klass, "branch", "-", "", "", total("estMin"), total("actMin"),
 			total("estUsd"), total("actUsd"), note])
 	merges = len(allRuns) - len(runs)
+	added = addImport(path, rows)
 	try:
 		with open(marker, "w", encoding="utf-8") as f:
 			f.write(f"{date} {topic}\n")
 	except OSError as error:
 		print(f"note: import marker not written ({error})", file=sys.stderr)
+	if not added:
+		print(f"OK: {checkout} was imported already (its rows are in the history); marker written")
+		return
 	print(f"OK: imported {len(rounds)} subagent rounds, {len(runs)} worker runs"
 		+ (f", {merges} merge or fix runs" if merges else "") + (", 1 branch row" if runs else ""))
+
+
+def addImport(path, rows):
+	"""Add an import's rows, each note tagged import=<importKey>, all at once; False (nothing added) when the
+	history holds that key already: a rerun after a crash between the rows and the marker."""
+	if not rows:
+		return True
+	tag = IMPORT_TAG + importKey(rows)
+	with HistoryLock(path):
+		if any((r.get("note") or "").endswith(tag) for r in load(path)):
+			return False
+		appendAtOnce(path, [row[:-1] + [f"{row[-1]}; {tag}" if row[-1] else tag] for row in rows])
+	for row in rows:
+		print(f"OK: added {row[4]} {row[5]} for {row[1]}")
+	return True
 
 
 def main():

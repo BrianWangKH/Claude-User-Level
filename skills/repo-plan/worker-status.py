@@ -1,10 +1,15 @@
-"""Summarise a worker's progress in a few lines, for the planning session in the main checkout.
+"""Summarise a worker's progress, for the planning session in the main checkout.
 
 Usage: python3 worker-status.py <topic>   (run from the main checkout)
 
+Output (migration step 3 of the run record: a display reader; nothing decides on it): first runstate.agent with
+runstate.detail (hooks/lib/runstate.py): the run's phase (none, launching, running, finishing, ended, orphan with
+suspected or confirmed, unknown), BUSY, RESUMABLE, TODO, the line for people, the evidence, and every run's
+result line; then "progress:" with the subagents now, the finished rounds and git. A topic without a worktree
+prints the status of its archive, or fails when there is none.
+
 Reads only what already exists; the worker writes nothing extra:
-  - <worktree>/.hook-only/session/*.json           start / end of each session (session-mark hook)
-  - <worktree>/.hook-only/runs/result-*.json       one per finished `claude -p` run (--output-format json)
+  - the run state through hooks/lib/runstate.py (status, detail)
   - <worktree>/.hook-only/budget/*.json            a file exists while that subagent runs
   - <worktree>/.hook-only/agent-guard/guard.log    one line per finished guarded round
   - <worktree>/.hook-only/cost/*.jsonl             tokens per finished round
@@ -18,17 +23,13 @@ import subprocess
 import sys
 import time
 
-STALE_SECONDS = 2 * 3600
+HOME_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+sys.path.insert(0, os.path.join(HOME_ROOT, "hooks", "lib"))  # homepath
+import homepath  # noqa: E402,F401  (config/ and the hooks/ role directories on sys.path)
+import homeconfig  # noqa: E402
+import runstate  # noqa: E402
+import wt_topics  # noqa: E402
 
-
-
-def flowLocal(worktree):
-	"""The topic's recorded flow mode (worker-control.py writes .hook-only/flow-mode at launch), else the env."""
-	try:
-		with open(os.path.join(worktree, ".hook-only", "flow-mode"), encoding="utf-8") as f:
-			return f.read().strip() == "local"
-	except OSError:
-		return os.environ.get("FLOW_INTEGRATION") == "local"
 
 def git(cwd, *args):
 	result = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True)
@@ -47,23 +48,6 @@ def loadJson(path):
 		return None
 
 
-def sessionState(hookOnly):
-	"""From the session-mark hook's records: the latest session's start and end."""
-	records = [loadJson(p) or {} for p in glob.glob(os.path.join(hookOnly, "session", "*.json"))]
-	records = [r for r in records if r.get("started")]
-	if not records:
-		return "not started"
-	latest = max(records, key=lambda r: r["started"])
-	now = time.time()
-	if latest.get("ended"):
-		return (f"ended {minutes(now - latest['ended'])} ago ({latest.get('end_reason') or 'unknown'}):"
-			" read the STATUS line of the latest result file")
-	running = now - latest["started"]
-	if running > STALE_SECONDS:
-		return f"started {minutes(running)} ago, no end recorded: probably killed (terminal closed?)"
-	return f"running for {minutes(running)} ({latest.get('permission_mode') or '?'} mode)"
-
-
 def current(hookOnly):
 	lines = []
 	now = time.time()
@@ -72,7 +56,7 @@ def current(hookOnly):
 		if "error" in state:
 			lines.append(f"now: {os.path.basename(path)[:-5]} · budget state error: {state['error']}")
 			continue
-		# A gate holding the agent (qg_common.markWait) is hook time: the agent's own clock stops at
+		# A gate holding the agent (budget_state.markWait) is hook time: the agent's own clock stops at
 		# the wait's start, as the budget hook counts it once the wait ends.
 		wait = state.get("hook_wait") or {}
 		since = float(wait.get("since") or now)
@@ -112,35 +96,15 @@ def finished(hookOnly):
 
 
 def gitSummary(worktree):
-	# origin/HEAD is often unset (remote added by hand), and the default branch may be main or
-	# master; without a base every branch looked like "0 commit(s)".
-	base = ""
-	refs = ("main", "master") if flowLocal(worktree) else ("origin/HEAD", "origin/main", "origin/master")
-	for ref in refs:
-		base = git(worktree, "merge-base", "HEAD", ref)
-		if base:
-			break
+	base, why = homeconfig.integrationBase(worktree)
 	commits = git(worktree, "log", "--format=%h %s", f"{base}..HEAD").splitlines() if base else []
 	status = git(worktree, "status", "--porcelain").splitlines()
 	modified = [l for l in status if not l.startswith("??")]
 	untracked = [l for l in status if l.startswith("??")]
-	text = f"git: {len(commits)} commit(s)" if base else "git: commits unknown (no origin/HEAD, origin/main or origin/master)"
+	text = f"git: {len(commits)} commit(s)" if base else f"git: commits unknown ({why})"
 	if commits:
 		text += " (" + "; ".join(commits[:5]) + (" …" if len(commits) > 5 else "") + ")"
 	return [text + f" · {len(modified)} modified, {len(untracked)} untracked"]
-
-
-def runs(runsDir):
-	lines = []
-	for path in sorted(glob.glob(os.path.join(runsDir, "result-*.json")), key=os.path.getmtime):
-		data = loadJson(path) or {}
-		name = os.path.basename(path)[len("result-"):-len(".json")]
-		denials = len(data.get("permission_denials") or [])
-		lines.append(f"run {name}: {data.get('terminal_reason') or 'unreadable'}"
-			f" · {data.get('num_turns', '?')} turns · ${data.get('total_cost_usd', 0):.2f}"
-			+ (f" · {denials} denials" if denials else "")
-			+ (" · ERROR" if data.get("is_error") else ""))
-	return lines
 
 
 def main():
@@ -153,13 +117,19 @@ def main():
 		print("FAIL: not inside a git repo")
 		sys.exit(1)
 	mainRoot = os.path.dirname(commonDir)
-	worktree = os.path.join(os.path.dirname(mainRoot), "worktrees", topic)
-	if not os.path.isdir(worktree):
-		print(f"FAIL: no worktree at {worktree}")
+	worktree = str(wt_topics.worktreeOf(mainRoot, topic))
+	status = runstate.status(mainRoot, topic)
+	if not os.path.isdir(worktree) and status["phase"] == "none":
+		print(f"FAIL: no worktree at {worktree} and no archived runs")
 		sys.exit(1)
+	print(runstate.agent(status, runstate.detail(status, text=False)))
+	print()
+	print("progress:")
+	if not os.path.isdir(worktree):
+		print(f"no worktree at {worktree}: archived or removed; the status above is the archive's")
+		return
 	hookOnly = os.path.join(worktree, ".hook-only")
-	print(f"{topic}: {sessionState(hookOnly)}")
-	for line in current(hookOnly) + finished(hookOnly) + gitSummary(worktree) + runs(os.path.join(hookOnly, "runs")):
+	for line in current(hookOnly) + finished(hookOnly) + gitSummary(worktree):
 		print(line)
 
 

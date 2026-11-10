@@ -14,4 +14,10 @@ __pycache__/
 /skills/synced/
 /skills/.trash/
 !/README.md
-!/README.en.md
+!/README.zh-TW.md
+!/config/
+# config/local.json, local.test.json and mode: the person's overrides and config mode, never tracked
+# (config/.gitignore says the same)
+/config/local.json
+/config/local.test.json
+/config/mode

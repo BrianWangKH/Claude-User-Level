@@ -1,0 +1,4 @@
+{
+  "_comment": "Repo queue limits (~/.claude/hooks/worker/wt_queue.py): each may only lower the person's value (home.json budget queue_workers_max, queue_max_concurrent_usd). Empty: the person's limits apply.",
+  "queue": {}
+}

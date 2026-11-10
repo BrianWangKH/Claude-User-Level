@@ -1,11 +1,13 @@
 // Builds the pane's rows from the files hooks write; no drawing and no `$` here, so tests feed it
-// plain file maps. File layout (see ~/.claude/README.md "東西在哪"):
+// plain file maps. Whether a run goes on is its phase from wt_controls.py (hooks/lib/runstate.py: withPhases,
+// isRunning), never these files' own reading; they give what the run shows (start, estimate, spend, desks).
+// File layout (see ~/.claude/README.md "Where things are"):
 //   <main>/.hook-only/workers/<topic>.json                    wt: run, worktree, started
 //   <worktree>/.hook-only/runs/start-<n> exit-<n> est-<n>.json result-<n>.json compact-<n>-<k>.json
-//   <worktree>/.hook-only/budget/events.jsonl, <agent_id>.json  subagent-budget.py
+//   <worktree>/.hook-only/budget/events.jsonl, <agent_id>.json  subagent_budget.py
 //   <worktree>/.hook-only/hook-read-only/progress/<key>.json    worker-progress.py
 
-import type { AgentRow, WorkerRow } from '../types'
+import type { AgentRow, Control, Phase, WorkerRow } from '../types'
 import type { Desk, Person, Pose, Seated } from './office'
 import { hex } from './sprite'
 
@@ -118,7 +120,7 @@ export async function worker(
 
   const startedMs =
     timeMs(await files.read(`${runs}/start-${run}`)) ?? (state.started ?? 0) * 1000
-  // est-<n>.json (worker-control.py): the estimate (minutes, usd) and the run's limits, budget_headroom
+  // est-<n>.json (worker-control.py): the estimate (minutes, usd) and the run's limits, budget_headroom_factor
   // above it (cap_minutes, cap). Files from before the headroom change have no cap_minutes.
   const est = parse<{ minutes?: number; usd?: number | null; cap?: number; cap_minutes?: number }>(
     await files.read(`${runs}/est-${run}.json`),
@@ -160,7 +162,7 @@ export async function worker(
     agents.push({
       id: round.id,
       type: typeOf(round),
-      // subagent-budget.py's started moves forward by every finished hook wait (qg_common.excludeWait).
+      // subagent_budget.py's started moves forward by every finished hook wait (budget_state.excludeWait).
       startedMs: budget?.started ? budget.started * 1000 : round.startedMs,
       waitSinceMs: wait?.since ? wait.since * 1000 : undefined,
       waitWhat: wait?.since ? wait.what : undefined,
@@ -203,7 +205,24 @@ export function workedMs(agent: AgentRow, nowMs: number): number {
   return Math.max(0, Math.min(nowMs, agent.waitSinceMs ?? nowMs) - agent.startedMs)
 }
 
-// Every worker wt knows of in this repo, running ones first.
+// The phases in which a run goes on (hooks/lib/runstate.py ACTIVE).
+const ACTIVE: ReadonlySet<Phase> = new Set<Phase>(['launching', 'running', 'finishing'])
+
+// Whether the worker's run goes on, by its phase (withPhases); a row without one (the controls not read yet, or
+// unreadable) is not running: an orphan or an unknown state is drawn as such, never with the spinner.
+export function isRunning(row: WorkerRow): boolean {
+  return row.phase !== undefined && ACTIVE.has(row.phase)
+}
+
+// The rows with each topic's phase from wt_controls.py's controls, running ones first.
+export function withPhases(rows: WorkerRow[], controls: Control[]): WorkerRow[] {
+  const phaseOf = new Map<string, Phase | undefined>(controls.map(row => [row.topic, row.phase]))
+  return rows
+    .map(row => ({ ...row, phase: phaseOf.get(row.topic) }))
+    .sort((a, b) => Number(!isRunning(a)) - Number(!isRunning(b)) || a.startedMs - b.startedMs)
+}
+
+// Every worker wt knows of in this repo, those without an exit file first (withPhases orders by phase).
 export async function snapshot(files: Files, mainRoot: string, nowMs: number, lingerMs: number): Promise<WorkerRow[]> {
   const dir = `${mainRoot}/.hook-only/workers`
   const rows: WorkerRow[] = []
@@ -217,7 +236,7 @@ export async function snapshot(files: Files, mainRoot: string, nowMs: number, li
 }
 
 // The share of the estimate used, time or spend, whichever is more: past 1 the run is in the
-// headroom (budget_headroom) before its limits. Older files with only a cap: spend against the cap.
+// headroom (budget_headroom_factor) before its limits. Older files with only a cap: spend against the cap.
 export function used(row: WorkerRow, nowMs: number): number | undefined {
   const parts: number[] = []
   if (row.estMinutes) parts.push((nowMs - row.startedMs) / 60000 / row.estMinutes)

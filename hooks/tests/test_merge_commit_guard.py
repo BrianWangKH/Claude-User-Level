@@ -1,4 +1,4 @@
-"""merge-commit-guard.py on a real merge conflict in a temporary repo.
+"""merge_commit_guard.py on a real merge conflict in a temporary repo.
 
 Run: uv run --offline --no-project --with pytest python -m pytest ~/.claude/hooks/tests/test_merge_commit_guard.py
 """
@@ -47,7 +47,7 @@ def conflicted(tmp_path):
 def run(repo, command="git commit --no-edit"):
 	data = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": command},
 		"cwd": str(repo), "session_id": "s"}
-	result = subprocess.run([sys.executable, os.path.join(HOOKS, "merge-commit-guard.py")], input=json.dumps(data),
+	result = subprocess.run([sys.executable, os.path.join(HOOKS, "hook-entry.py"), "check", "merge-commit-guard"], input=json.dumps(data),
 		capture_output=True, text=True)
 	assert result.returncode == 0, result.stderr
 	assert "error" not in result.stderr, result.stderr

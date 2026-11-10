@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { bar, snapshot, track, used, workedMs, type Files } from './model'
+import { bar, isRunning, snapshot, track, used, withPhases, workedMs, type Files } from './model'
 
 const START = Date.parse('2026-10-30T10:00:00+08:00')
 
@@ -117,6 +117,26 @@ test('running workers come before finished ones', async () => {
 
   const rows = await snapshot(filesOf(files), '/m', START + 12 * 60000, 600000)
   expect(rows.map(row => row.topic)).toEqual(['clean', 'done'])
+})
+
+test('running is the phase wt_controls.py reports, never a missing exit file; running ones come first', async () => {
+  const files = running()
+  files['/m/.hook-only/workers/dead.json'] = JSON.stringify({ run: 1, worktree: '/d' })
+  files['/d/.hook-only/runs/start-1'] = '2026-10-30T07:00:00+08:00\n' // no exit file: its wrapper died
+  const rows = await snapshot(filesOf(files), '/m', START + 12 * 60000, 600000)
+  expect(rows.every(row => row.exitMs === undefined)).toBe(true)
+
+  const controls = [
+    { topic: 'dead', isHeld: false, phase: 'orphan' as const },
+    { topic: 'clean', isHeld: false, phase: 'finishing' as const },
+  ]
+  const phased = withPhases(rows, controls)
+  expect(phased.map(row => [row.topic, row.phase, isRunning(row)])).toEqual([
+    ['clean', 'finishing', true],
+    ['dead', 'orphan', false],
+  ])
+  // Before the controls are read (or when they can't be), nothing counts as running.
+  expect(withPhases(rows, []).some(isRunning)).toBe(false)
 })
 
 test('the bar is clamped to its width', () => {

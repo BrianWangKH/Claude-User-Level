@@ -5,7 +5,8 @@ The integration tests build a throwaway git repo (origin/main = its first commit
 quality-gates.json runs pytest-cov through `uv run --offline --with`, and feed hook input JSON to the
 hooks as subprocesses with CLAUDE_PROJECT_DIR pointing at that repo (test-hooks.md).
 Inside Claude Code's sandbox bwrap can't nest: the hook subprocesses then get
-QG_UNSANDBOXED_FOR_TESTS=1 and the tests that need a real bwrap are skipped. Run the suite once
+the programs run from a tree copy naming the tests' stand-in bwrap (config_fixtures.gateHome) and the tests that
+need a real bwrap are skipped. Run the suite once
 outside the sandbox (your own terminal) to exercise the sandboxed path end to end.
 """
 import json
@@ -19,20 +20,35 @@ import time
 import pytest
 
 HOOKS = os.environ.get("QG_HOOKS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REAL_HOOKS = os.path.expanduser("~/.claude/hooks")
-sys.path[:0] = [HOOKS, REAL_HOOKS]
+LIB = os.path.join(HOOKS, "lib")  # the tree under test's hooks/lib: homepath adds config/ and the role directories
+sys.path.insert(0, LIB)
+import homepath  # noqa: E402
 
+import budget_state  # noqa: E402
+import config_fixtures  # noqa: E402
+import hook_entries  # noqa: E402
+import homeconfig  # noqa: E402
 import qg_common  # noqa: E402
 import qg_complexity  # noqa: E402
 import qg_mutate  # noqa: E402
 
-LANGS = qg_common.loadJson(os.path.join(HOOKS, "qg_langs.json"))
+LANGS = qg_common.loadJson(os.path.join(HOOKS, "lib", "qg_langs.json"))
+# Programs run from the session's clean copy of the tree (config_fixtures.cleanHome): the person's files in the
+# tree under test never change a result.
+RUN_HOOKS = os.path.join(config_fixtures.gateHome(), "hooks")
+RUN_LIB = os.path.join(RUN_HOOKS, "lib")
+
+
+def runPath(name):
+	"""Where a hook of the tree under test lies in the clean copy."""
+	return os.path.join(RUN_HOOKS, os.path.relpath(homepath.locate(name), HOOKS))
 GO = shutil.which("go") or "/usr/local/go/bin/go"
-UV = shutil.which("uv") or os.path.expanduser("~/.local/bin/uv")
-BWRAP_OK = subprocess.run(["bwrap", "--ro-bind", "/", "/", "--unshare-net", "true"], capture_output=True).returncode == 0 \
-	if shutil.which("bwrap") else False
-HOOK_ENV = {} if BWRAP_OK else {qg_common.UNSANDBOXED_ENV: "1"}
+UV = config_fixtures.testUv()
+BWRAP_OK = config_fixtures.bwrapNests()
 needsBwrap = pytest.mark.skipif(not BWRAP_OK, reason="bwrap can't create namespaces here (inside Claude Code's sandbox)")
+# The repo fixture's integration branch is origin/main (no local main): the gates run in origin mode
+# (conftest.py). Tests taking flowMode run in both; local mode's own gates are in test_local_mode.py.
+pytestmark = pytest.mark.flow_mode("origin")
 
 
 # --- qg_common ---------------------------------------------------------------------------------
@@ -186,6 +202,29 @@ def test_go_helper_counting_rules_and_generic_agreement():
 	assert generic == {fn["start"]: fn["ccn"] for fn in funcs}
 
 
+def fakeGo(tmp_path, body):
+	go = tmp_path / "go"
+	go.write_text("#!/bin/sh\n" + body + "\n")
+	go.chmod(0o755)
+	return str(go)
+
+
+def test_the_go_helper_past_the_gate_deadline_raises_at_once(tmp_path, monkeypatch):
+	monkeypatch.setattr(qg_common, "_deadline", (time.monotonic() - 1, "commit_gate_seconds"))
+	began = time.monotonic()
+	with pytest.raises(qg_common.DeadlineReached):
+		qg_complexity.goFunctions({"p.go": GO_SAMPLE}, fakeGo(tmp_path, "exec sleep 30"))
+	assert time.monotonic() - began < 15
+
+
+def test_a_go_helper_run_past_the_gate_deadline_raises_instead_of_waiting(tmp_path, monkeypatch):
+	monkeypatch.setattr(qg_common, "_deadline", (time.monotonic() + 1, "commit_gate_seconds"))
+	began = time.monotonic()
+	with pytest.raises(qg_common.DeadlineReached):
+		qg_complexity.goFunctions({"p.go": GO_SAMPLE}, fakeGo(tmp_path, "exec sleep 30"))
+	assert time.monotonic() - began < 15
+
+
 def test_mask_keeps_layout_and_blanks_strings_and_comments():
 	text = 'a = "x # y"  # c\nb = \'\'\'\nif\n\'\'\'\n'
 	masked = qg_complexity.mask(text, LANGS["python"])
@@ -313,6 +352,11 @@ def repo(tmp_path):
 	return root
 
 
+def markBase(repo, mode):
+	"""Point the mode's integration branch at HEAD: origin/main in origin mode, the local main in local mode."""
+	git(repo, "update-ref", "refs/remotes/origin/main" if mode == "origin" else "refs/heads/main", "HEAD")
+
+
 def hostEnv():
 	"""This process's environment at call time (PYTEST_CURRENT_TEST included), without the session's
 	FLOW_INTEGRATION: local mode would point the hooks at a local main these repos don't have."""
@@ -321,8 +365,8 @@ def hostEnv():
 
 def runHook(name, repo, payload, env=None, args=()):
 	full = {"cwd": repo, "session_id": "s", "transcript_path": "/dev/null", **payload}
-	result = subprocess.run([sys.executable, os.path.join(HOOKS, name), *args], input=json.dumps(full), capture_output=True, text=True,
-		env={**hostEnv(), "CLAUDE_PROJECT_DIR": repo, "PYTHONPATH": REAL_HOOKS, **HOOK_ENV, **(env or {})}, timeout=900)
+	result = subprocess.run([sys.executable, runPath(name), *args], input=json.dumps(full), capture_output=True, text=True,
+		env={**hostEnv(), "CLAUDE_PROJECT_DIR": repo, "PYTHONPATH": RUN_LIB, **(env or {})}, timeout=900)
 	assert result.returncode == 0, result.stderr
 	assert "error" not in result.stderr, result.stderr
 	return json.loads(result.stdout) if result.stdout.strip() else None
@@ -379,6 +423,9 @@ def test_crap_gate_blocks_three_times_then_alerts(repo):
 	assert devStop(repo) is None
 	with open(os.path.join(repo, ".hook-only/agent-guard/ALERT")) as f:
 		assert f.read().count("crap-gate") == 1
+	# The ALERT is pending: hook-entry.py's pre entry denies the commit (agent-guard), so the gate runs nothing.
+	assert commit(repo) is None
+	os.remove(os.path.join(repo, ".hook-only/agent-guard/ALERT"))
 	denied = commit(repo)
 	assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
 
@@ -457,12 +504,192 @@ def test_presentation_class_read_from_main_checkout_in_a_worktree(repo, tmp_path
 	assert devStop(wt) is None
 
 
-def test_no_config_does_nothing(repo):
+# --- without quality-gates.json (stage 3b): detected languages run on their home profiles -----------------
+# The gate runs from a copy of the tree (config_fixtures.copyHome: its config without the person's files), a fake
+# program as the profile's {uv} (the copy's local.json), and no bwrap for these runs: the fake tool lives under
+# the test's tmp, which bwrap hides.
+
+def homeConfig(tmp_path, uv):
+	"""A hook run (gateRun): from a tree copy whose local.json sets {uv} to uv, unsandboxed (section comment)."""
+	home = config_fixtures.copyHome(os.path.dirname(HOOKS), tmp_path / "home")
+	(home / "config" / "local.json").write_text(json.dumps({"toolchains": {"tools": {"uv": uv}}}))
+	config_fixtures.useStandIn(home / "config")
+	return {"home": home, "env": {}}
+
+
+def fakeTool(path, body, shebang=None):
+	"""An executable Python script at path (default interpreter: this one)."""
+	path.parent.mkdir(parents=True, exist_ok=True)
+	path.write_text(f"#!{shebang or sys.executable}\nimport sys\n{textwrap.dedent(body)}")
+	path.chmod(0o755)
+	return str(path)
+
+
+# A coverage run that writes an empty LCOV report: only the CCN rule has something to find.
+EMPTY_REPORT = """\
+	for arg in sys.argv[1:]:
+	    if arg.startswith("--cov-report=lcov:"):
+	        open(arg.split(":", 1)[1], "w").close()
+	"""
+# pytest without pytest-cov: argparse's usage error, exit 4, no report.
+NO_PYTEST_COV = """\
+	print("ERROR: usage: pytest [options] [file_or_dir] [file_or_dir] [...]")
+	print("pytest: error: unrecognized arguments: --cov --cov-branch")
+	sys.exit(4)
+	"""
+
+
+def dropConfig(repo):
 	git(repo, "rm", "-q", ".claude/quality-gates.json")
 	git(repo, "commit", "-q", "-m", "drop config")
 	git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+
+
+def gateRun(name, repo, payload, run):
+	"""(parsed stdout or None, stderr) of a hook run; stderr may hold the gate's own notes. run: {"env": extra
+	variables, "home": the tree copy to run the gate from (homeConfig), absent: the tree under test}."""
+	full = {"cwd": repo, "session_id": "s", "transcript_path": "/dev/null", **payload}
+	script, lib = runPath(name), RUN_LIB
+	if "home" in run:
+		script = os.path.join(run["home"], "hooks", os.path.relpath(homepath.locate(name), HOOKS))
+		lib = os.path.join(run["home"], "hooks", "lib")
+	result = subprocess.run([sys.executable, script], input=json.dumps(full), capture_output=True,
+		text=True, env={**hostEnv(), "CLAUDE_PROJECT_DIR": repo, "PYTHONPATH": lib, **run["env"]}, timeout=300)
+	assert result.returncode == 0, result.stderr
+	return (json.loads(result.stdout) if result.stdout.strip() else None), result.stderr
+
+
+def devStopIn(repo, env):
+	return gateRun("crap-gate.py", repo, {"hook_event_name": "SubagentStop", "agent_type": "developer",
+		"agent_id": "dev1", "last_assistant_message": "done", "stop_hook_active": False}, env)
+
+
+def commitIn(repo, env):
+	return gateRun("crap-gate.py", repo, {"hook_event_name": "PreToolUse", "tool_name": "Bash",
+		"tool_input": {"command": "git commit -m impl"}}, env)
+
+
+def test_without_config_a_tracked_language_runs_on_its_profile(repo, tmp_path):
+	dropConfig(repo)
+	env = homeConfig(tmp_path, fakeTool(tmp_path / "bin" / "uv", EMPTY_REPORT))
 	write(repo, "pkg/busy.py", COMPLEX)
-	assert devStop(repo) is None and commit(repo) is None
+	out, _ = devStopIn(repo, env)
+	assert out["decision"] == "block" and "CCN" in out["reason"]
+	assert "python was enabled automatically" in out["reason"] and '"languages": {"python": false}' in out["reason"]
+	out, _ = commitIn(repo, env)
+	assert out["hookSpecificOutput"]["permissionDecision"] == "deny" and "CCN" in out["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_without_config_and_without_a_profiled_language_nothing_is_checked(tmp_path):
+	root = str(tmp_path / "docs")
+	os.makedirs(root)
+	git(root, "init", "-q", "-b", "feature/x/topic")
+	write(root, "README.md", "x\n")
+	git(root, "add", ".")
+	git(root, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "base")
+	git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+	write(root, "notes.txt", "more\n")
+	assert devStop(root) is None and commit(root) is None
+
+
+def test_a_coverage_run_without_pytest_cov_blocks_naming_the_key_and_its_source(repo, tmp_path):
+	dropConfig(repo)
+	env = homeConfig(tmp_path, fakeTool(tmp_path / "bin" / "uv", NO_PYTEST_COV))
+	write(repo, "pkg/small.py", "def small(x):\n    return x\n")
+	out, _ = devStopIn(repo, env)
+	reason = out["reason"]
+	assert out["decision"] == "block" and "coverage for python produced no report (exit 4)" in reason
+	assert "unrecognized arguments: --cov" in reason
+	profile = f"{os.path.join(env['home'], 'config', os.path.basename(homeconfig.path('toolchains')))} section 'toolchains'"
+	assert f"languages.python.coverage (value from the home profile {profile})" in reason
+	assert f"override it in {qg_common.CONFIG_FILE}" in reason
+
+
+def test_a_coverage_command_that_never_starts_spares_the_developer_and_refuses_the_commit(repo, tmp_path):
+	dropConfig(repo)
+	env = homeConfig(tmp_path, fakeTool(tmp_path / "bin" / "uv", "sys.exit(0)\n", shebang="/nonexistent/python"))
+	write(repo, "pkg/small.py", "def small(x):\n    return x\n")
+	out, err = devStopIn(repo, env)
+	assert out is None and "not checked, environment problem" in err and "didn't start" in err  # bwrap's execvp
+	assert not os.path.exists(os.path.join(repo, ".hook-only", "quality", "dev-dev1.json"))
+	out, _ = commitIn(repo, env)
+	reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+	assert out["hookSpecificOutput"]["permissionDecision"] == "deny" and "never started" in reason
+	assert "languages.python.coverage" in reason
+
+
+def test_a_missing_tool_fails_the_load_and_refuses_the_commit_without_blocking_the_developer(repo, tmp_path):
+	dropConfig(repo)
+	env = homeConfig(tmp_path, str(tmp_path / "nowhere" / "uv"))
+	write(repo, "pkg/small.py", "def small(x):\n    return x\n")
+	out, err = devStopIn(repo, env)
+	assert out is None and "config problem" in err
+	out, _ = commitIn(repo, env)
+	reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+	assert "config doesn't load" in reason and "tool {uv}" in reason and '"languages": {"python": false}' in reason
+
+
+@pytest.mark.parametrize("body,expected", [
+	('print("sh: 1: uv: not found")\nsys.exit(127)\n', "the test command didn't start"),
+	(NO_PYTEST_COV, "the tests didn't run (exit 4, red_invalid_exit_codes)"),
+	("sys.exit(5)\n", "the tests didn't run (exit 5, red_invalid_exit_codes)"),
+])
+def test_a_first_tests_commit_whose_tests_never_ran_is_refused(repo, tmp_path, body, expected):
+	config = json.loads(git(repo, "show", f"HEAD:{qg_common.CONFIG_FILE}"))
+	config["languages"]["python"]["test"] = [fakeTool(tmp_path / "bin" / "fake-test", body)]
+	write(repo, qg_common.CONFIG_FILE, json.dumps(config))
+	git(repo, "commit", "-q", "-am", "test command")
+	git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+	write(repo, "tests/test_new.py", "from pkg.missing import feature\n\n\ndef test_new():\n    assert feature() == 1\n")
+	git(repo, "add", "tests/test_new.py")
+	home = config_fixtures.copyHome(os.path.dirname(HOOKS), tmp_path / "home")
+	config_fixtures.useStandIn(home / "config")  # the fake test command lives under tmp, which bwrap hides
+	out, _ = commitIn(repo, {"home": home, "env": {}})
+	reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+	assert out["hookSpecificOutput"]["permissionDecision"] == "deny" and expected in reason
+	assert f"languages.python.test (value from {qg_common.CONFIG_FILE})" in reason
+
+
+def reviewerStopIn(repo, env, agent="r1"):
+	return gateRun("mutation.py", repo, {"hook_event_name": "SubagentStop", "agent_type": "code-reviewer",
+		"agent_id": agent, "last_assistant_message": "report", "stop_hook_active": False}, env)
+
+
+def test_mutation_reports_a_baseline_that_never_started_naming_the_key(repo, tmp_path):
+	dropConfig(repo)
+	env = homeConfig(tmp_path, fakeTool(tmp_path / "bin" / "uv", "sys.exit(0)\n", shebang="/nonexistent/python"))
+	write(repo, "pkg/grade.py", MUTABLE)
+	out, _ = reviewerStopIn(repo, env)
+	reason = out["reason"]
+	assert "baseline didn't run for python: the coverage command didn't start" in reason
+	assert "languages.python.coverage (value from the home profile" in reason
+	assert "note: python was enabled automatically" in reason
+	assert mutationResults(repo)["results"] == []
+
+
+def test_mutation_holds_the_reviewer_once_when_the_config_does_not_load(repo, tmp_path):
+	dropConfig(repo)
+	env = homeConfig(tmp_path, str(tmp_path / "nowhere" / "uv"))
+	write(repo, "pkg/grade.py", MUTABLE)
+	out, _ = reviewerStopIn(repo, env)
+	assert out["decision"] == "block" and "config doesn't load" in out["reason"] and "tool {uv}" in out["reason"]
+	assert reviewerStopIn(repo, env)[0] is None
+
+
+def test_run_command_never_hands_back_a_start_failure_as_an_exit_code(tmp_path, monkeypatch):
+	config_fixtures.standInHere(monkeypatch, homeconfig)
+	with pytest.raises(qg_common.NotStarted, match="is not an executable file"):
+		qg_common.runCommand([str(tmp_path / "missing")], str(tmp_path))
+	with pytest.raises(qg_common.NotStarted, match="is not on PATH"):
+		qg_common.runCommand(["no-such-program-qg"], str(tmp_path))
+	bad = fakeTool(tmp_path / "bad", "", shebang="/nonexistent/python")
+	with pytest.raises(qg_common.NotStarted, match="didn't start"):  # bwrap's own "execvp" failure
+		qg_common.runCommand([bad], str(tmp_path))
+	for body in ("sys.exit(127)\n", "sys.exit(126)\n", 'print("bwrap: execvp uv: No such file or directory")\nsys.exit(1)\n'):
+		with pytest.raises(qg_common.NotStarted, match="didn't start"):
+			qg_common.runCommand([fakeTool(tmp_path / "t", body)], str(tmp_path))
+	assert qg_common.runCommand([fakeTool(tmp_path / "ok", "print('bwrap: execvp x')\n")], str(tmp_path))[0] == 0
+	assert qg_common.runCommand([fakeTool(tmp_path / "red", "sys.exit(1)\n")], str(tmp_path))[0] == 1
 
 
 MUTABLE = """\
@@ -714,6 +941,38 @@ def test_mutation_failing_baseline_is_reported(repo):
 	assert "baseline failed for python" in out["reason"]
 
 
+def breakSelect(repo):
+	"""Points the base's select.pytest at a program that doesn't exist: the selection can't be used."""
+	config = json.loads(git(repo, "show", f"HEAD:{qg_common.CONFIG_FILE}"))
+	config["languages"]["python"]["select"]["pytest"] = ["/nonexistent/pytest"]
+	write(repo, qg_common.CONFIG_FILE, json.dumps(config))
+	git(repo, "commit", "-q", "-am", "broken select")
+	git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+
+
+def test_unusable_select_falls_back_to_the_whole_test_command_and_says_so(repo):
+	selectRepo(repo)
+	breakSelect(repo)
+	write(repo, "pkg/grade.py", MUTABLE)
+	write(repo, "tests/test_grade.py", WEAK_TEST)
+	firstToolCall(repo)
+	result = latestResult(repo)
+	assert result["baseline_failed"] == []
+	assert len(result["select_fallback"]) == 1
+	assert result["select_fallback"][0].startswith("python: test selection not used, its command didn't start")
+	edge = {(m["line"], m["op"]): m for m in result["results"]}[(2, ">= -> >")]
+	assert edge["status"] == "survived" and "tests" not in edge  # the whole test command, no selection
+	out = reviewer(repo, "SubagentStop", last_assistant_message="report")
+	assert "note: python: test selection not used" in out["reason"]
+
+
+def test_coverage_data_without_test_contexts_cannot_drive_the_selection():
+	mutation = loadHook("mutation.py", "mutation_hook")
+	assert not mutation.hasTestContexts({"a.py": {"executed": [1, 2], "contexts": {"1": [""], "2": []}}})
+	assert mutation.hasTestContexts({"a.py": {"executed": [1], "contexts": {"1": ["", "t.py::t|run"]}}})
+	assert mutation.hasTestContexts({"a.py": {"executed": [], "contexts": {}}})
+
+
 def test_merge_review_skips_scan(repo):
 	write(repo, "pkg/grade.py", MUTABLE)
 	directory = os.path.join(repo, ".hook-only/hook-read-only/mutation")
@@ -791,7 +1050,7 @@ def test_mutate_request_refused_for_other_agents(repo):
 		"tool_name": "Bash", "tool_input": {"command": "ls"}}) is None
 
 
-# ---- mutate-request like the scan (2026-11-02): the reviewer's call was held 10+ min, unmarked and on its budget
+# ---- mutate-request like the scan: the reviewer's call was held 10+ min, unmarked and on its budget
 
 
 def manualRequest(repo, tmp_path, monkeypatch, specs, agent="r1"):
@@ -800,8 +1059,7 @@ def manualRequest(repo, tmp_path, monkeypatch, specs, agent="r1"):
 	budget's hook_wait mark at that moment); each recorded run takes at least 0.6 s, so two of them make a
 	wait excludeWait counts (>= 1 s) however warm the test runner is. Returns (module, call, calls); call()
 	runs the request (its output goes to stdout)."""
-	for key, value in HOOK_ENV.items():
-		monkeypatch.setenv(key, value)
+	config_fixtures.usableSandboxHere(monkeypatch, homeconfig)
 	monkeypatch.delenv("FLOW_INTEGRATION", raising=False)
 	mutation = loadHook("mutation.py", "mutation_hook")
 	budgetDir = os.path.join(repo, ".hook-only", "budget")
@@ -889,6 +1147,20 @@ def test_mutate_request_with_select_runs_only_the_covering_tests_and_confirms_su
 	assert "hook_wait" not in budgetState(repo, "r1")
 
 
+def test_mutate_request_with_unusable_select_runs_the_whole_suite_and_adds_a_note(repo, tmp_path, monkeypatch,
+		capsys):
+	selectRepo(repo)
+	breakSelect(repo)
+	write(repo, "pkg/grade.py", MUTABLE)
+	write(repo, "tests/test_grade.py", WEAK_TEST)
+	_, call, calls = manualRequest(repo, tmp_path, monkeypatch, MANUAL_SPECS[:2])
+	call()
+	lines = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecisionReason"].splitlines()[1:]
+	assert lines[:2] == ["pkg/grade.py:4  `>= 60` -> `> 60`  -> survived", "pkg/grade.py:6  `\"C\"` -> `\"D\"`  -> caught"]
+	assert len(lines) == 3 and lines[2].startswith("note: python: test selection not used")
+	assert [argv for argv, _ in calls] == [None, None]
+
+
 def test_mutate_request_clears_the_wait_when_it_fails(repo, tmp_path, monkeypatch, capsys):
 	mutation, call, _ = manualRequest(repo, tmp_path, monkeypatch, MANUAL_SPECS)
 
@@ -914,7 +1186,7 @@ def test_mutate_request_clears_the_wait_when_it_fails(repo, tmp_path, monkeypatc
 	assert [e["agent_id"] for e in hookWaits(repo)] == ["r1"]
 
 
-# ---- hand-back gates (2026-10-31): a block at Stop after SubagentHandback came too late
+# ---- hand-back gates: a block at Stop after SubagentHandback came too late
 
 
 def devHandback(repo, agent="dev1", tool_input=None):
@@ -1025,13 +1297,13 @@ def test_exclude_wait_shifts_budget_start_and_logs_event(tmp_path):
 	os.makedirs(budgetDir)
 	with open(os.path.join(budgetDir, "a1.json"), "w") as f:
 		json.dump({"minutes": 10, "started": 1000.0}, f)
-	qg_common.excludeWait(root, "a1", 120.0)
-	qg_common.excludeWait(root, "a1", 0.4)
+	budget_state.excludeWait(root, "a1", 120.0)
+	budget_state.excludeWait(root, "a1", 0.4)
 	assert qg_common.loadJson(os.path.join(budgetDir, "a1.json"))["started"] == 1120.0
 	with open(os.path.join(budgetDir, "events.jsonl")) as f:
 		events = [json.loads(line) for line in f]
 	assert [(e["event"], e["agent_id"], e["seconds"]) for e in events] == [("HookWait", "a1", 120.0)]
-	qg_common.excludeWait(root, "missing", 5.0)
+	budget_state.excludeWait(root, "missing", 5.0)
 
 
 
@@ -1042,39 +1314,39 @@ def test_a_wait_is_marked_while_it_lasts_and_cleared_when_it_ends(tmp_path):
 	stateFile = os.path.join(budgetDir, "a1.json")
 	with open(stateFile, "w") as f:
 		json.dump({"minutes": 10, "started": 1000.0}, f)
-	qg_common.markWait(root, "a1", "mutation scan", 3300)
+	budget_state.markWait(root, "a1", "mutation scan", 3300)
 	mark = qg_common.loadJson(stateFile)["hook_wait"]
 	assert (mark["what"], mark["max_seconds"]) == ("mutation scan", 3300)
 	assert mark["since"] > 1000.0
-	qg_common.excludeWait(root, "a1", 0.4)
+	budget_state.excludeWait(root, "a1", 0.4)
 	state = qg_common.loadJson(stateFile)
 	assert "hook_wait" not in state and state["started"] == 1000.0
 	assert not os.path.exists(os.path.join(budgetDir, "events.jsonl"))
-	qg_common.markWait(root, "a1", "mutation scan", 3300)
-	qg_common.excludeWait(root, "a1", 60.0)
+	budget_state.markWait(root, "a1", "mutation scan", 3300)
+	budget_state.excludeWait(root, "a1", 60.0)
 	state = qg_common.loadJson(stateFile)
 	assert "hook_wait" not in state and state["started"] == 1060.0
-	qg_common.markWait(root, "missing", "mutation scan", 3300)
+	budget_state.markWait(root, "missing", "mutation scan", 3300)
 	assert not os.path.exists(os.path.join(budgetDir, "missing.json"))
 
-def workerStop(message, tasks, active=False):
-	return runHook("worker-stop.py", "/tmp", {"hook_event_name": "Stop", "last_assistant_message": message,
+def workerStop(repo, message, tasks, active=False):
+	return runHook("worker-stop.py", str(repo), {"hook_event_name": "Stop", "last_assistant_message": message,
 		"background_tasks": tasks, "stop_hook_active": active}, env={"CLAUDE_WORKER_MINUTES": "30"})
 
 
-def test_worker_stop_lets_status_end_while_a_subagent_runs():
-	assert workerStop("STATUS: done\nall good", [{"agent_type": "code-reviewer"}]) is None
+def test_worker_stop_lets_status_end_while_a_subagent_runs(tmp_path):
+	assert workerStop(tmp_path, "STATUS: done\nall good", [{"agent_type": "code-reviewer"}]) is None
 
 
-def test_worker_stop_still_holds_status_under_a_background_command():
-	out = workerStop("STATUS: done", [{"type": "shell", "description": "dev server"}])
+def test_worker_stop_still_holds_status_under_a_background_command(tmp_path):
+	out = workerStop(tmp_path, "STATUS: done", [{"type": "shell", "description": "dev server"}])
 	assert out["decision"] == "block" and "dev server" in out["reason"]
 
 
-def test_worker_stop_pause_while_subagent_runs_and_format_when_idle():
-	assert workerStop("waiting for the reviewer", [{"agent_type": "code-reviewer"}]) is None
-	assert "STATUS: done" in workerStop("finished", [])["reason"]
-	assert workerStop("finished", [], active=True) is None
+def test_worker_stop_pause_while_subagent_runs_and_format_when_idle(tmp_path):
+	assert workerStop(tmp_path, "waiting for the reviewer", [{"agent_type": "code-reviewer"}]) is None
+	assert "STATUS: done" in workerStop(tmp_path, "finished", [])["reason"]
+	assert workerStop(tmp_path, "finished", [], active=True) is None
 
 
 # --- config from the diff base, sandboxed commands ----------------------------------------------
@@ -1098,13 +1370,14 @@ def test_config_deleted_in_working_tree_still_applies(repo):
 	assert result and result.get("decision") == "block"
 
 
-def test_guard_paths_come_from_the_base(repo):
+def test_guard_paths_come_from_the_base(repo, flowMode):
+	markBase(repo, flowMode)
 	write(repo, ".claude/guard-paths.json", json.dumps({"tests": ["pkg/"]}))
 	config, _ = qg_common.loadConfig(repo)
 	assert "pkg" not in config["exclude"] and "pkg/" not in config["exclude"]
 	git(repo, "add", ".claude/guard-paths.json")
 	git(repo, "commit", "-q", "-m", "guard")
-	git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+	markBase(repo, flowMode)
 	config, _ = qg_common.loadConfig(repo)
 	assert "pkg/" in config["exclude"]
 
@@ -1117,7 +1390,7 @@ def test_no_origin_means_no_config(tmp_path):
 	assert qg_common.loadConfig(root) == (None, None)
 
 
-SETTINGS = {"home_read": [], "home_write": [], "protect": [".git", ".hook-only", ".claude"],
+SETTINGS = {"bwrap_path": "/usr/bin/bwrap", "home_read": [], "home_write": [], "protect": [".git", ".hook-only", ".claude"],
 	"env_pass": ["PATH"], "env_set": {"TMPDIR": "/tmp"}}
 
 
@@ -1131,7 +1404,7 @@ def test_sandbox_argv_order_and_env(tmp_path):
 	args = qg_common.sandboxArgv(["pytest", "-q"], work, {"A": "1"}, [work, out], [], SETTINGS, home,
 		{"PATH": "/usr/bin", "SECRET_TOKEN": "x"})
 	text = " ".join(args)
-	assert args[:3] == ["bwrap", "--ro-bind", "/"]
+	assert args[:3] == [SETTINGS["bwrap_path"], "--ro-bind", "/"]
 	hidden = str(tmp_path / "mnt")
 	os.makedirs(hidden)
 	withHide = " ".join(qg_common.sandboxArgv(["true"], work, {}, [work], [], {**SETTINGS, "hide": [hidden, "/no/such"]}, home, {}))
@@ -1148,10 +1421,16 @@ def test_sandbox_argv_order_and_env(tmp_path):
 	assert relative[relative.index("--chdir") + 1] == os.path.abspath(".")
 
 
+def noBwrap(monkeypatch, path="/no/such/bwrap"):
+	"""This test process's gate_sandbox bwrap_path set to path (its config copy's local.json)."""
+	with open(os.path.join(homeconfig.configDir(), "local.json"), "w", encoding="utf-8") as f:
+		json.dump({"gate_sandbox": {"bwrap_path": path}}, f)
+	monkeypatch.setattr(homeconfig, "_cache", {})
+
+
 def test_missing_bwrap_raises_and_runs_nothing(tmp_path, monkeypatch):
-	monkeypatch.delenv(qg_common.UNSANDBOXED_ENV, raising=False)
 	monkeypatch.setattr(qg_common, "_probed", [])
-	monkeypatch.setenv("PATH", str(tmp_path))
+	noBwrap(monkeypatch)
 	marker = tmp_path / "ran"
 	with pytest.raises(qg_common.SandboxError):
 		qg_common.runCommand([sys.executable, "-c", f"open({str(marker)!r}, 'w').close()"], str(tmp_path))
@@ -1160,7 +1439,7 @@ def test_missing_bwrap_raises_and_runs_nothing(tmp_path, monkeypatch):
 
 def loadHook(name, module):
 	import importlib.util
-	spec = importlib.util.spec_from_file_location(module, os.path.join(HOOKS, name))
+	spec = importlib.util.spec_from_file_location(module, homepath.locate(name))
 	loaded = importlib.util.module_from_spec(spec)
 	spec.loader.exec_module(loaded)
 	return loaded
@@ -1194,12 +1473,42 @@ def test_mutation_reports_a_missing_sandbox_apart_from_a_red_baseline(repo, monk
 	assert result["sandbox_unavailable"].startswith("bwrap unavailable") and result["baseline_failed"] == []
 
 
-def test_unsandboxed_switch_only_inside_pytest(monkeypatch, capsys):
-	monkeypatch.setenv(qg_common.UNSANDBOXED_ENV, "1")
-	assert qg_common.unsandboxedForTests()
-	monkeypatch.delenv("PYTEST_CURRENT_TEST")
-	assert not qg_common.unsandboxedForTests()
-	assert "ignored outside pytest" in capsys.readouterr().err
+def test_a_bwrap_first_on_path_is_never_the_sandbox(tmp_path, monkeypatch):
+	"""bwrap is never looked up on PATH: a fake one first there (as a repo's settings env could put it) never runs;
+	the configured absolute path does."""
+	fake = tmp_path / "bin" / "bwrap"
+	fake.parent.mkdir()
+	fake.write_text(f"#!/bin/sh\ntouch {tmp_path / 'fake-ran'}\nexit 0\n")
+	fake.chmod(0o755)
+	config_fixtures.standInHere(monkeypatch, homeconfig)
+	monkeypatch.setattr(qg_common, "_probed", [])
+	monkeypatch.setenv("PATH", f"{fake.parent}:/usr/bin:/bin")
+	assert qg_common.runCommand([sys.executable, "-c", "print('ran')"], str(tmp_path))[0] == 0
+	assert not (tmp_path / "fake-ran").exists()
+
+
+@pytest.mark.parametrize("path", ["bwrap", "relative/bwrap", "/no/such/bwrap", "/etc/hostname"])
+def test_a_bwrap_path_that_is_not_an_absolute_executable_refuses(tmp_path, monkeypatch, path):
+	"""Fail closed: a configured bwrap_path that is relative (a PATH lookup), missing or not executable refuses the
+	command; nothing runs."""
+	noBwrap(monkeypatch, path)
+	monkeypatch.setattr(qg_common, "_probed", [True])  # a probe that passed earlier never excuses the path check
+	marker = tmp_path / "ran"
+	with pytest.raises(qg_common.SandboxError, match="bwrap_path"):
+		qg_common.runCommand([sys.executable, "-c", f"open({str(marker)!r}, 'w').close()"], str(tmp_path))
+	assert not marker.exists()
+
+
+def test_no_environment_variable_runs_a_command_unsandboxed(tmp_path, monkeypatch):
+	"""The tests' old switch (QG_UNSANDBOXED_FOR_TESTS, set here, inside pytest) is never read: with no usable bwrap
+	the command is refused, never run without it."""
+	monkeypatch.setenv("QG_UNSANDBOXED_FOR_TESTS", "1")
+	monkeypatch.setattr(qg_common, "_probed", [])
+	noBwrap(monkeypatch)
+	marker = tmp_path / "ran"
+	with pytest.raises(qg_common.SandboxError):
+		qg_common.runCommand([sys.executable, "-c", f"open({str(marker)!r}, 'w').close()"], str(tmp_path))
+	assert not marker.exists()
 
 
 def test_repo_protect_entries_are_added(tmp_path):
@@ -1210,9 +1519,50 @@ def test_repo_protect_entries_are_added(tmp_path):
 
 
 def test_home_sandbox_settings_cover_the_known_paths():
-	settings = qg_common.loadJson(qg_common.SANDBOX_FILE)
+	settings = homeconfig.load("gate_sandbox")
 	assert {"/home", "/mnt", "/run/WSL", "/run/user"} <= set(settings["hide"])
-	assert {".git", ".hook-only", ".claude", "plans"} <= set(settings["protect"])
+	assert {".hook-only", "plans"} <= set(settings["hide_inside"])
+	assert {".git", ".claude"} <= set(settings["protect"])
+
+
+def test_hide_inside_entries_are_hidden_in_every_root_after_its_binds(tmp_path):
+	"""The hooks' state and plans/ inside a writable root and a readable one: an empty read-only tmpfs over a
+	directory, /dev/null over a file, mounted after every bind (so nothing re-exposes them); a missing entry
+	is skipped and a protect entry stays a read-only bind."""
+	home = str(tmp_path / "h")
+	work, read = str(tmp_path / "w"), str(tmp_path / "r")
+	for root in (work, read):
+		os.makedirs(os.path.join(root, ".hook-only", "hook-read-only"))
+		os.makedirs(os.path.join(root, ".git"))
+	with open(os.path.join(work, "plans"), "w") as f:  # a file of that name is hidden too
+		f.write("x")
+	settings = {**SETTINGS, "protect": [".git"], "hide_inside": [".hook-only", "plans"]}
+	args = qg_common.sandboxArgv(["true"], work, {}, [work], [read], settings, home, {})
+	text = " ".join(args)
+	for root in (work, read):
+		inner = f"{root}/.hook-only"
+		assert f"--tmpfs {inner} --remount-ro {inner}" in text
+		assert text.index(f"--tmpfs {inner}") > max(text.index(f"--bind {work} {work}"), text.index(f"--ro-bind {read} {read}"))
+	assert f"--ro-bind /dev/null {work}/plans" in text and f"{read}/plans" not in text
+	assert text.index(f"--ro-bind {work}/.git") < text.index(f"--tmpfs {work}/.hook-only")
+	assert f"--ro-bind {work}/.hook-only" not in text
+
+
+def test_the_gate_no_longer_only_protects_the_hooks_state():
+	"""Old vs new for the home defaults: .hook-only and plans moved from protect (read-only, readable) to hide_inside
+	(empty, read-only); every other protect entry stays."""
+	settings = homeconfig.load("gate_sandbox", defaultsOnly=True)
+	old = {".git", ".hook-only", ".claude", "plans"}
+	assert set(settings["protect"]) == old - set(settings["hide_inside"])
+	assert set(settings["hide_inside"]) == {".hook-only", "plans"}
+
+
+def test_home_sandbox_paths_have_no_surrounding_spaces():
+	# A " ~/godot" entry was never expanded by full() and so never mounted, with no error anywhere.
+	settings = homeconfig.load("gate_sandbox")
+	for key in ("hide", "hide_inside", "home_read", "home_write", "protect"):
+		for path in settings.get(key) or []:
+			assert path == path.strip(), f"{key}: {path!r}"
 
 
 SYSTEM_PYTHON = "/usr/bin/python3"
@@ -1228,14 +1578,12 @@ def sandboxed(code, cwd, **kwargs):
 
 @needsBwrap
 def test_sandbox_blocks_network(tmp_path, monkeypatch):
-	monkeypatch.delenv(qg_common.UNSANDBOXED_ENV, raising=False)
 	code, _, out = sandboxed("import socket; socket.create_connection(('1.1.1.1', 53), timeout=3)", str(tmp_path))
 	assert code != 0 and "OSError" in out, out
 
 
 @needsBwrap
 def test_sandbox_hides_home_and_protects_entries(tmp_path, monkeypatch):
-	monkeypatch.delenv(qg_common.UNSANDBOXED_ENV, raising=False)
 	work = tmp_path / "w"
 	(work / ".hook-only").mkdir(parents=True)
 	gitconfig = os.path.expanduser("~/.gitconfig")
@@ -1250,8 +1598,32 @@ def test_sandbox_hides_home_and_protects_entries(tmp_path, monkeypatch):
 
 
 @needsBwrap
+def test_sandbox_hides_the_hooks_state_and_plans_inside_every_root(tmp_path, monkeypatch):
+	"""Real bwrap: the home's hide_inside entries are empty and read-only inside the writable checkout and a readable
+	one, hook-read-only/ included; the files of the checkout itself stay readable and writable."""
+	work, other = tmp_path / "w", tmp_path / "o"
+	for root in (work, other):
+		(root / ".hook-only" / "hook-read-only").mkdir(parents=True)
+		(root / ".hook-only" / "hook-read-only" / "secret").write_text("s")
+		(root / "plans").mkdir()
+		(root / "plans" / "topic.md").write_text("p")
+	code, _, out = sandboxed(
+		"import os\n"
+		f"for root in ({str(work)!r}, {str(other)!r}):\n"
+		"    print(root[-1], sorted(os.listdir(root + '/.hook-only')), sorted(os.listdir(root + '/plans')))\n"
+		"try:\n"
+		"    open('.hook-only/x', 'w')\n"
+		"except OSError as e:\n"
+		"    print('refused', e.errno)\n"
+		"open('ok', 'w').write('1')\n",
+		str(work), readable=[str(other)])
+	assert code == 0, out
+	assert "w [] []" in out and "o [] []" in out and "refused 30" in out, out
+	assert (work / "ok").exists() and (work / ".hook-only" / "hook-read-only" / "secret").read_text() == "s"
+
+
+@needsBwrap
 def test_sandbox_runs_from_a_relative_cwd(tmp_path, monkeypatch):
-	monkeypatch.delenv(qg_common.UNSANDBOXED_ENV, raising=False)
 	monkeypatch.chdir(tmp_path)
 	code, _, out = sandboxed("import os; print(os.getcwd())", ".")
 	assert code == 0 and str(tmp_path) in out, out
@@ -1259,23 +1631,23 @@ def test_sandbox_runs_from_a_relative_cwd(tmp_path, monkeypatch):
 
 @needsBwrap
 def test_sandbox_clears_environment(tmp_path, monkeypatch):
-	monkeypatch.delenv(qg_common.UNSANDBOXED_ENV, raising=False)
 	monkeypatch.setenv("QG_TEST_SECRET", "s3cret")
 	code, _, out = sandboxed("import os; print(os.environ.get('QG_TEST_SECRET'))", str(tmp_path))
 	assert code == 0 and "s3cret" not in out, out
 
 
-def test_agent_guard_reads_guard_paths_from_the_base(repo):
+def test_agent_guard_reads_guard_paths_from_the_base(repo, flowMode):
 	import importlib.util
-	spec = importlib.util.spec_from_file_location("agent_guard", os.path.join(HOOKS, "agent-guard.py"))
+	spec = importlib.util.spec_from_file_location("agent_guard", os.path.join(HOOKS, "guards", "agent_guard.py"))
 	guard = importlib.util.module_from_spec(spec)
 	spec.loader.exec_module(guard)
+	markBase(repo, flowMode)
 	assert guard.loadGuardPaths(repo) is None
 	write(repo, ".claude/guard-paths.json", json.dumps({"tests": ["tests/"]}))
 	assert guard.loadGuardPaths(repo) is None
 	git(repo, "add", ".claude/guard-paths.json")
 	git(repo, "commit", "-q", "-m", "guard")
-	git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+	markBase(repo, flowMode)
 	write(repo, ".claude/guard-paths.json", json.dumps({"tests": []}))
 	assert guard.loadGuardPaths(repo)["tests"] == ["tests"]
 
@@ -1288,7 +1660,7 @@ def test_unfinished_developer_report_is_not_checked(repo, status):
 	assert devStop(repo, message="DONE\nall green")["decision"] == "block"
 
 
-# --- red/green at commit (2026-11-01) ------------------------------------------------------------
+# --- red/green at commit ------------------------------------------------------------
 
 def commitStaged(repo, *paths):
 	git(repo, "add", *paths)
@@ -1328,7 +1700,7 @@ def test_later_tests_commit_is_not_checked(repo):
 
 
 def test_tests_fix_before_the_implementation_commit_is_not_checked(repo):
-	# ml-tools 2026-11-01: tests committed red, the developer's implementation still uncommitted, and qa
+	# Seen: tests committed red, the developer's implementation still uncommitted, and qa
 	# fixes a wrong test; the suite now passes because of that implementation, which is not qa's commit
 	write(repo, "tests/test_small.py", "from pkg.small import small\n\n\ndef test_small():\n    assert small(1) == 2\n")
 	assert commitStaged(repo, "tests/test_small.py") is None
@@ -1357,3 +1729,354 @@ def test_only_the_first_line_of_a_report_counts_as_its_status(repo):
 	write(repo, "pkg/busy.py", COMPLEX)
 	out = devStop(repo, message="DONE\nBLOCKED earlier on a flaky fixture, fixed now")
 	assert out and out["decision"] == "block"
+
+
+# ---- gate waits: every gate marks its hold and clears it in a finally; a hook Claude Code
+# cancels at its timeout runs no finally, so its mark is settled later (budget_state.releaseOrphanWait)
+
+MUTATION_CMD = hook_entries.cmd("gates/mutation.py")
+CRAP_CMD = hook_entries.cmd("gates/crap-gate.py")
+
+
+def settingsTimeouts():
+	"""{(event, matcher, if, command): timeout} of the generated settings hooks (hook-entries.py)."""
+	hooks = hook_entries.settingsHooks(homeconfig.get(*hook_entries.CEILINGS))
+	return {(event, g.get("matcher"), h.get("if"), h["command"]): h.get("timeout") for event, groups in hooks.items()
+		for g in groups for h in g["hooks"]}
+
+
+def test_gate_deadlines_fit_under_the_settings_ceilings():
+	timeouts = settingsTimeouts()
+	assert timeouts[("PreToolUse", "Bash", "Bash(mutate-request *)", MUTATION_CMD)] >= qg_common.hookTimeout("mutate_request_seconds")
+	assert timeouts[("PreToolUse", "Bash", "Bash(git *)", CRAP_CMD)] >= qg_common.hookTimeout("commit_gate_seconds")
+	gates = max(qg_common.hookTimeout("review_handback_seconds"), qg_common.hookTimeout("developer_gate_seconds"))
+	entry = hook_entries.cmd("hook-entry.py")
+	assert timeouts[("PreToolUse", "SubagentHandback", None, entry + " handback")] >= gates
+	assert timeouts[("SubagentStop", None, None, entry + " stop")] >= gates
+	defaults = homeconfig.load("quality")
+	assert defaults["mutation_wait_seconds"] < qg_common.hookTimeout("review_handback_seconds")
+
+
+def gateBudget(root, agent):
+	budgetDir = os.path.join(root, ".hook-only", "budget")
+	os.makedirs(budgetDir, exist_ok=True)
+	path = os.path.join(budgetDir, f"{agent}.json")
+	with open(path, "w") as f:
+		json.dump({"minutes": 10, "started": 1000.0}, f)
+	return path
+
+
+def test_developer_handback_marks_the_coverage_wait_and_clears_it_on_a_crash(tmp_path, monkeypatch):
+	root = str(tmp_path)
+	stateFile = gateBudget(root, "d1")
+	gate = loadHook("crap-gate.py", "crap_gate_waits")
+	seen = []
+
+	def slow(*args):
+		seen.append(qg_common.loadJson(stateFile).get("hook_wait"))
+		time.sleep(1.1)
+
+	monkeypatch.setattr(gate, "developerGate", slow)
+	gate.onDeveloperHandback({"agent_id": "d1", "tool_input": {"report": "DONE"}}, root, {}, {}, root)
+	assert seen[0]["what"] == "coverage run" and seen[0]["max_seconds"] == qg_common.hookTimeout("developer_gate_seconds")
+	state = qg_common.loadJson(stateFile)
+	assert "hook_wait" not in state and state["started"] >= 1001.1
+
+	def crash(*args):
+		assert "hook_wait" in qg_common.loadJson(stateFile)
+		raise RuntimeError("boom")
+
+	monkeypatch.setattr(gate, "developerGate", crash)
+	with pytest.raises(RuntimeError):
+		gate.onDeveloperHandback({"agent_id": "d1", "tool_input": {"report": "DONE"}}, root, {}, {}, root)
+	assert "hook_wait" not in qg_common.loadJson(stateFile)
+
+
+def test_reviewer_handback_clears_the_scan_wait_on_a_crash(tmp_path, monkeypatch):
+	root = str(tmp_path)
+	stateFile = gateBudget(root, "r1")
+	mutation = loadHook("mutation.py", "mutation_waits")
+
+	def crash(*args):
+		mark = qg_common.loadJson(stateFile)["hook_wait"]
+		assert mark["max_seconds"] == qg_common.hookTimeout("review_handback_seconds")
+		time.sleep(1.1)
+		raise RuntimeError("boom")
+
+	monkeypatch.setattr(mutation, "survivorReason", crash)
+	with pytest.raises(RuntimeError):
+		mutation.onHandback({"agent_id": "r1"}, root, {}, {}, root)
+	state = qg_common.loadJson(stateFile)
+	assert "hook_wait" not in state and state["started"] >= 1001.1
+
+
+def test_an_orphaned_wait_is_settled_at_stop_or_once_older_than_its_hook_timeout(tmp_path):
+	root = str(tmp_path)
+	stateFile = gateBudget(root, "a1")
+
+	def mark(since, limit):
+		state = qg_common.loadJson(stateFile)
+		state["hook_wait"] = {"since": since, "what": "mutation scan", "max_seconds": limit}
+		with open(stateFile, "w") as f:
+			json.dump(state, f)
+
+	mark(2000.0, 600)
+	# younger than its hook's timeout: the hook may still hold a parallel call
+	assert budget_state.releaseOrphanWait(root, "a1", now=2300.0) == 0.0
+	assert "hook_wait" in qg_common.loadJson(stateFile)
+	# older: Claude Code cancelled the hook; the hold lasted at most its timeout
+	assert budget_state.releaseOrphanWait(root, "a1", now=2700.0) == 600.0
+	state = qg_common.loadJson(stateFile)
+	assert "hook_wait" not in state and state["started"] == 1600.0
+	mark(3000.0, 600)
+	# at SubagentStop any mark left is a cancelled hook's, however young
+	assert budget_state.releaseOrphanWait(root, "a1", ended=True, now=3300.0) == 300.0
+	with open(os.path.join(root, ".hook-only", "budget", "events.jsonl")) as f:
+		events = [json.loads(line) for line in f]
+	# dated at the mark, inside the round cost-history.py matches the wait to
+	assert [(e["t"], e["seconds"]) for e in events] == [
+		(time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(2000.0)), 600.0),
+		(time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(3000.0)), 300.0)]
+	assert budget_state.releaseOrphanWait(root, "a1", ended=True, now=4000.0) == 0.0  # nothing left
+	assert budget_state.releaseOrphanWait(root, "missing", ended=True) == 0.0
+
+
+# --- coverage targets from the diff (stage 3c): {changed_dirs} --------------------------------------
+# The python profile's coverage measures only the changed files' directories (qg_common module doc).
+# The acceptance tests run the real pytest-cov on a two-package repo and compare crap-gate's findings with
+# derived targets against measuring the whole repo (--cov=., which, unlike bare --cov, also reports files
+# no test imports), for the same diff.
+
+def test_changed_dirs_are_the_changed_files_directories_relative_to_cwd():
+	root = "/r"
+	assert qg_common.changedDirs(root, root, ["pa/a.py", "pa/b.py", "pb/sub/c.py", "top.py"]) == [".", "pa", "pb/sub"]
+	assert qg_common.changedDirs(root, "/r/proj", ["proj/pkg/a.py"]) == ["pkg"]
+	assert qg_common.changedDirs(root, root, []) == ["."] and qg_common.changedDirs(root, root, None) == ["."]
+
+
+def test_expand_coverage_repeats_the_changed_dirs_item_and_fills_the_rest():
+	argv = ["uv", "--cov={changed_dirs}", "--cov-report=lcov:{report}", "{{changed_dirs}}"]
+	out = qg_common.expandCoverage(argv, {"repo": "/r", "root": "/r", "report": "/o/c.lcov"}, ["pa", "pb"])
+	assert out == ["uv", "--cov=pa", "--cov=pb", "--cov-report=lcov:/o/c.lcov", "{changed_dirs}"]
+	assert qg_common.derivesTargets({"coverage": argv}) and not qg_common.derivesTargets({"coverage": ["--cov=pa"]})
+	assert not qg_common.derivesTargets({"coverage": ["{{changed_dirs}}"]}) and not qg_common.derivesTargets({})
+
+
+def test_parse_lcov_reads_a_relative_sf_against_the_commands_cwd():
+	text = "SF:pkg/m.py\nDA:1,1\nend_of_record\nSF:/r/other/n.py\nDA:2,0\nend_of_record\n"
+	assert qg_common.parseLcov(text, "/r", "/r/proj") == {"proj/pkg/m.py": {1: 1}, "other/n.py": {2: 0}}
+
+
+def test_a_repo_coverage_command_without_changed_dirs_runs_exactly_as_written(tmp_path, monkeypatch):
+	config_fixtures.standInHere(monkeypatch, homeconfig)  # the fake tool lives under tmp, which bwrap hides
+	seen = tmp_path / "argv.json"
+	tool = fakeTool(tmp_path / "bin" / "cov", f"""\
+		import json
+		json.dump(sys.argv[1:], open({str(seen)!r}, "w"))
+		for arg in sys.argv[1:]:
+		    if arg.startswith("--cov-report=lcov:"):
+		        open(arg.split(":", 1)[1], "w").close()
+		""")
+	own = [tool, "--cov=pa", "--cov=pb", "--cov-report=lcov:{report}"]
+	root = str(tmp_path / "r")
+	os.makedirs(root)
+	cover, code, _, _ = qg_common.measureCoverage(root, "python", {"coverage": own}, str(tmp_path / "w"), 60,
+		files={"pc/new.py": {1}})
+	argv = json.loads(seen.read_text())
+	assert cover == {} and code == 0
+	assert argv[:2] == ["--cov=pa", "--cov=pb"] and argv[2].startswith("--cov-report=lcov:") and len(argv) == 3
+
+
+PA_CORE = """\
+	def double(x):
+	    return 2 * x
+	"""
+PB_CORE = """\
+	def triple(x):
+	    return 3 * x
+	"""
+
+
+@pytest.fixture
+def twoPackages(tmp_path):
+	"""A repo with packages pa and pb, each with a tested module, quality-gates.json with derived targets."""
+	root = str(tmp_path / "two")
+	os.makedirs(root)
+	git(root, "init", "-q", "-b", "feature/x/topic")
+	git(root, "config", "user.email", "t@t")
+	git(root, "config", "user.name", "t")
+	write(root, ".gitignore", ".hook-only/\nplans/\n__pycache__/\n")
+	for package, core in (("pa", PA_CORE), ("pb", PB_CORE)):
+		write(root, f"{package}/__init__.py", "")
+		write(root, f"{package}/core.py", core)
+	write(root, "pb/old.py", "def old():\n    return 1\n")
+	write(root, "tests/test_pa.py", "from pa.core import double\n\n\ndef test_double():\n    assert double(2) == 4\n")
+	write(root, "tests/test_pb.py", "from pb.core import triple\n\n\ndef test_triple():\n    assert triple(2) == 6\n")
+	runner = [UV, "run", "--offline", "--no-project", "--with", "pytest", "--with", "pytest-cov==7.1.0", "python", "-m",
+		"pytest", "-q", "-p", "no:cacheprovider"]
+	config = {"languages": {"python": {"extensions": [".py"], "coverage_format": "lcov", "test": runner + ["-x"],
+		"coverage": runner + ["--cov={changed_dirs}", "--cov-branch", "--cov-report=lcov:{report}"]}},
+		"exclude": ["tests/"], "scratch_exclude": [".hook-only/", ".git/", "__pycache__"]}
+	write(root, qg_common.CONFIG_FILE, json.dumps(config))
+	git(root, "add", ".")
+	git(root, "commit", "-q", "-m", "base")
+	git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+	return root
+
+
+def findingsWith(repo, target, monkeypatch):
+	"""crap-gate's findings for the working tree, the coverage command's {changed_dirs} item replaced by
+	target (None keeps the derived one)."""
+	config_fixtures.usableSandboxHere(monkeypatch, homeconfig)
+	crap = loadHook("crap-gate.py", "crap_gate_cov")
+	config, limits = qg_common.loadConfig(repo)
+	python = config["languages"]["python"]
+	if target is not None:
+		python["coverage"] = [target if "{changed_dirs}" in item else item for item in python["coverage"]]
+	findings, failing = crap.evaluate(repo, config, limits, ccnOnly=False)
+	assert failing == []
+	return sorted(findings)
+
+
+CHANGED_PA = """\
+	def double(x):
+	    return 2 * x
+
+
+	def halve(x):
+	    if x is None:
+	        return 0
+	    return x / 2
+	"""
+
+
+def test_derived_targets_find_what_whole_repo_measurement_finds(twoPackages, monkeypatch):
+	write(twoPackages, "pa/core.py", CHANGED_PA)
+	derived = findingsWith(twoPackages, None, monkeypatch)
+	assert derived == findingsWith(twoPackages, "--cov=.", monkeypatch)
+	assert derived == ["pa/core.py:6-8: changed, never executed by a test; delete, or mark with a reason"]
+
+
+def test_a_new_file_in_a_new_package_no_test_imports_is_reported_unexecuted(twoPackages, monkeypatch):
+	write(twoPackages, "pc/__init__.py", "")
+	write(twoPackages, "pc/new.py", "def fresh(x):\n    return x + 1\n")
+	derived = findingsWith(twoPackages, None, monkeypatch)
+	assert derived == findingsWith(twoPackages, "--cov=.", monkeypatch)
+	assert "pc/new.py:1-2: changed, never executed by a test; delete, or mark with a reason" in derived
+	# Bare --cov (the profile before stage 3c) has no source to search, so the file was missing: no finding.
+	assert not any(f.startswith("pc/new.py") for f in findingsWith(twoPackages, "--cov", monkeypatch))
+
+
+def test_a_deleted_file_is_no_target_and_changes_nothing(twoPackages, monkeypatch):
+	git(twoPackages, "rm", "-q", "pb/old.py")
+	assert findingsWith(twoPackages, None, monkeypatch) == []
+	write(twoPackages, "pa/core.py", CHANGED_PA)
+	derived = findingsWith(twoPackages, None, monkeypatch)
+	assert derived == findingsWith(twoPackages, "--cov=.", monkeypatch) and len(derived) == 1
+
+
+def test_a_test_only_change_runs_no_coverage(twoPackages, monkeypatch):
+	write(twoPackages, "tests/test_pa.py", "from pa.core import double\n\n\ndef test_double():\n    assert double(3) == 6\n")
+	crap = loadHook("crap-gate.py", "crap_gate_cov")
+	monkeypatch.setattr(crap.qg_common, "measureCoverage", brokenSandbox)  # raising here would fail the test
+	config, limits = qg_common.loadConfig(twoPackages)
+	assert crap.evaluate(twoPackages, config, limits, ccnOnly=False) == ([], [])
+
+
+def test_a_changed_file_derived_coverage_leaves_out_is_a_finding_never_a_pass(twoPackages, monkeypatch):
+	write(twoPackages, ".coveragerc", "[run]\nomit = pa/core.py\n")
+	write(twoPackages, "pa/core.py", CHANGED_PA)
+	derived = findingsWith(twoPackages, None, monkeypatch)
+	assert len(derived) == 1 and derived[0].startswith("pa/core.py: changed, but the coverage run reported nothing")
+	# A repo's own command keeps its reading: a file its --cov list leaves out isn't checked for coverage.
+	write(twoPackages, ".coveragerc", "")
+	assert findingsWith(twoPackages, "--cov=pb", monkeypatch) == []
+
+
+def test_mutation_baseline_measures_the_changed_files(twoPackages, monkeypatch):
+	mutation = loadHook("mutation.py", "mutation_cov")
+	seen = []
+
+	def spy(*args, **kwargs):
+		seen.append(kwargs.get("files"))
+		raise qg_common.SandboxError("stop here")
+
+	monkeypatch.setattr(mutation.qg_common, "measureCoverage", spy)
+	write(twoPackages, "pa/core.py", CHANGED_PA)
+	config, limits = qg_common.loadConfig(twoPackages)
+	mutation.scan(twoPackages, config, limits, mutation.mutationDir(twoPackages))
+	assert [sorted(files) for files in seen] == [["pa/core.py"]]
+
+
+def test_a_command_past_the_gate_deadline_raises_instead_of_reading_as_a_timeout(tmp_path, monkeypatch):
+	config_fixtures.standInHere(monkeypatch, homeconfig)
+	monkeypatch.setattr(qg_common, "_deadline", (time.monotonic() + 1, "commit_gate_seconds"))
+	start = time.monotonic()
+	with pytest.raises(qg_common.DeadlineReached, match="commit_gate_seconds"):
+		qg_common.runCommand(["sleep", "10"], str(tmp_path), timeout=60)
+	assert time.monotonic() - start < 5
+	with pytest.raises(qg_common.DeadlineReached):  # nothing left: no command starts
+		qg_common.runCommand(["true"], str(tmp_path), timeout=60)
+
+
+def test_a_command_s_own_timeout_still_returns_none_inside_a_deadline(tmp_path, monkeypatch):
+	config_fixtures.standInHere(monkeypatch, homeconfig)
+	monkeypatch.setattr(qg_common, "_deadline", (time.monotonic() + 60, "commit_gate_seconds"))
+	code, _seconds, _tail = qg_common.runCommand(["sleep", "10"], str(tmp_path), timeout=1)
+	assert code is None
+	monkeypatch.setattr(qg_common, "_deadline", None)
+	assert qg_common.remaining() is None
+
+
+def test_start_deadline_uses_the_gate_key(monkeypatch):
+	monkeypatch.setattr(qg_common, "_deadline", None)
+	qg_common.startDeadline("mutate_request_seconds")
+	assert 0 < qg_common.remaining() <= qg_common.hookTimeout("mutate_request_seconds")
+	monkeypatch.setattr(qg_common, "_deadline", None)
+
+
+def mountedAs(args, path):
+	"""How bwrap's mounts in args leave path: "hidden" under a tmpfs, "read" or "write" under a bind, None when only
+	the read-only / covers it. Later mounts cover earlier ones, as in bwrap."""
+	state, at = None, 0
+	takes = {"--tmpfs": 1, "--dev": 1, "--proc": 1, "--remount-ro": 1, "--chdir": 1, "--ro-bind": 2, "--bind": 2,
+		"--setenv": 2}
+	while at < len(args) and args[at] != "--":
+		option = args[at]
+		target = args[at + takes.get(option, 0)] if takes.get(option) else None
+		if target and option in ("--tmpfs", "--ro-bind", "--bind") and (path == target or path.startswith(target + "/")):
+			state = {"--tmpfs": "hidden", "--ro-bind": "read", "--bind": "write"}[option]
+		at += 1 + takes.get(option, 0)
+	return state
+
+
+def test_the_gate_home_puts_the_tests_uv_and_its_cache_back_under_a_fake_home(tmp_path, monkeypatch):
+	"""public-check.py's clean install runs the suite with a fake HOME, where gate_sandbox's ~ paths name the fake home:
+	the gate home and usableSandboxHere (config_fixtures.exposeTools) put the tests' uv and the cache it reports back by
+	absolute path, so bwrap's tmpfs over /home and $HOME never hides them ('bwrap: execvp <uv>: No such file or
+	directory')."""
+	fake = tmp_path / "fake-home"
+	fake.mkdir()
+	monkeypatch.setenv("HOME", str(fake))
+	config_fixtures.usableSandboxHere(monkeypatch, homeconfig)  # exposeTools, as for the gate home
+	settings = homeconfig.load("gate_sandbox")
+	checkout = tmp_path / "repo"
+	checkout.mkdir()
+	args = qg_common.sandboxArgv([UV, "run"], str(checkout), {}, [str(checkout)], [], settings, str(fake), {})
+	_read, write = config_fixtures.toolPaths()
+	assert mountedAs(args, UV) in (None, "read"), args
+	assert all(mountedAs(args, path) in (None, "write") for path in write if os.path.exists(path)), args
+	assert mountedAs(args, str(fake / "x")) == "hidden"
+
+
+def test_the_gate_sandbox_passes_the_uv_cache_location_on(tmp_path):
+	"""home.json gate_sandbox env_pass carries UV_CACHE_DIR: a run whose uv cache isn't under its HOME (verify.md
+	step 6's fake HOME) still finds its packages offline. Only the value is passed; no path is bound for it."""
+	import homeconfig
+
+	settings = homeconfig.load("gate_sandbox")
+	assert "UV_CACHE_DIR" in settings["env_pass"]
+	args = qg_common.sandboxArgv(["true"], str(tmp_path), {}, [str(tmp_path)], [], settings, str(tmp_path / "h"),
+		{"UV_CACHE_DIR": "/cache/uv", "SECRET": "x"})
+	assert ["--setenv", "UV_CACHE_DIR", "/cache/uv"] == args[args.index("UV_CACHE_DIR") - 1:args.index("UV_CACHE_DIR") + 2]
+	assert "SECRET" not in args and "/cache/uv" not in [a for a in args if a.startswith("/cache")][1:]

@@ -14,6 +14,8 @@ import {
   noticeOf,
   parseControls,
   queueAllText,
+  queueLimitsText,
+  runLine,
   sentOutcome,
   settle,
   toastMs,
@@ -26,11 +28,12 @@ const OUTPUT = JSON.stringify({
   controls: [
     { topic: 'fresh', action: 'launch', held: false, auto: { ok: true } },
     { topic: 'held', action: 'resume', run: 1, held: true, auto: { ok: false, why: 'HOLD' } },
-    { topic: 'done', why: 'done (STATUS: done); nothing to resume', run: 3, held: false, auto: { ok: false, why: 'done' } },
+    { topic: 'done', why: 'done (STATUS done); nothing to resume', run: 3, held: false, auto: { ok: false, why: 'done' } },
     { topic: 'Bad Name', action: 'launch', held: false },
     { topic: 'odd', action: 'explode', held: false },
   ],
-  local_blocker: 'a worker is running (x)',
+  local_blocker: 'topic(s) planned but not launched (x) started from the other mode\'s base; launch or remove them first',
+  flow_mode: 'local',
 })
 
 test('the rows wt_controls.py prints become controls; bad names and unknown actions are dropped', () => {
@@ -41,7 +44,72 @@ test('the rows wt_controls.py prints become controls; bad names and unknown acti
   expect(parsed.controls[1].isHeld).toBe(true)
   expect(parsed.controls[2].action).toBe(undefined)
   expect(parsed.controls[3].action).toBe(undefined) // 'explode' is no action
-  expect(parsed.localBlocker).toBe('a worker is running (x)')
+  expect(parsed.localBlocker).toMatch(/^topic\(s\) planned but not launched \(x\)/)
+  expect(parsed.flowMode).toBe('local')
+  expect(parsed.flowModeError).toBe(undefined)
+})
+
+test('a kept wrap-up row parses as the wrapup action with its line and to-do; auto never sends it', () => {
+  const kept = {
+    topic: 'kept-t', action: 'wrapup', run: 2, held: false,
+    auto: { ok: false, why: "run 2's wrap-up is kept for the person: wt wrapup" }, phase: 'orphan',
+    human: { schema: 1, topic: 'kept-t', run: 2, phase: 'orphan',
+      line: 'kept-t · run 2 finished its work (STATUS done), but its wrapper ended before the wrap-up; kept for later: merge, next, finish, queue_tick',
+      todo: { text: 'type wt wrapup kept-t (or press the button) to finish the wrap-up', command: 'wt wrapup kept-t', button: 'wrapup' } },
+  }
+  const [row] = parseControls(JSON.stringify({ schema: 1, controls: [kept], flow_mode: 'local' })).controls
+  expect(row.action).toBe('wrapup')
+  expect(row.auto).toEqual({ ok: false, why: kept.auto.why })
+  expect(runLine(row)).toEqual({ text: `${kept.human.line} → ${kept.human.todo.text}`, color: 'yellow' })
+})
+
+test('the run display fields are read when present and an older output parses exactly as before', () => {
+  const orphan = {
+    topic: 'dead-t', action: 'stop', run: 1, held: false, auto: { ok: false, why: 'already running (run 1)' },
+    phase: 'orphan',
+    human: { schema: 1, topic: 'dead-t', run: 1, phase: 'orphan', line: 'dead-t · run 1 may have died: no sign of life since 05:41',
+      todo: { text: 'check its process with wt status dead-t, then ask in the planning session what to do', command: 'wt status dead-t', button: null } },
+  }
+  const odd = { topic: 'odd-t', held: false, phase: 'sleeping', human: { line: 7 }, status_error: 'run status unreadable: boom' }
+  const [dead, broken] = parseControls(JSON.stringify({ schema: 1, controls: [orphan, odd], flow_mode: 'local' })).controls
+  expect(dead.action).toBe('stop') // the decision is still the row's own
+  expect(dead.phase).toBe('orphan')
+  expect(dead.human).toEqual({ line: orphan.human.line, todo: { text: orphan.human.todo.text, command: 'wt status dead-t' } })
+  expect(broken.phase).toBe(undefined)
+  expect(broken.human).toBe(undefined)
+  expect(broken.statusError).toBe('run status unreadable: boom')
+  // schema 1 without the display fields (hooks before migration step 3): the same row as before
+  expect(parseControls(OUTPUT).controls[0]).toEqual({ topic: 'fresh', action: 'launch', why: undefined, run: undefined, isHeld: false, auto: { ok: true, why: undefined } })
+  expect('phase' in parseControls(OUTPUT).controls[0]).toBe(false)
+})
+
+test('the line under a row: the run line and its to-do, yellow for an orphan, red for unknown or an error', () => {
+  const base = { topic: 't', isHeld: false }
+  expect(runLine(base)).toBe(undefined)
+  expect(runLine({ ...base, phase: 'running', human: { line: 't · run 1 running', todo: { command: 'wt stop t' } } }))
+    .toEqual({ text: 't · run 1 running', color: undefined })
+  expect(runLine({ ...base, phase: 'orphan', human: { line: 't · run 1 may have died', todo: { text: 'wt resume checks first', command: 'wt resume t' } } }))
+    .toEqual({ text: 't · run 1 may have died → wt resume checks first', color: 'yellow' })
+  expect(runLine({ ...base, phase: 'unknown', human: { line: 't · run 2 state unreadable: bad' } }))
+    .toEqual({ text: 't · run 2 state unreadable: bad', color: 'red' })
+  expect(runLine({ ...base, statusError: 'run status unreadable: boom' })).toEqual({ text: 'run status unreadable: boom', color: 'red' })
+})
+
+test('the flow mode comes only from wt_controls.py; its error, or no mode, is an error, never off', () => {
+  const failed = parseControls(JSON.stringify({ schema: 1, controls: [], flow_mode: null, flow_mode_error: 'flow mode unreadable: bad' }))
+  expect(failed.flowMode).toBe(undefined)
+  expect(failed.flowModeError).toBe('flow mode unreadable: bad')
+  expect(parseControls(JSON.stringify({ schema: 1, controls: [], flow_mode: 'Local' })).flowModeError).toMatch(/gave no flow mode/)
+  expect(parseControls(JSON.stringify({ schema: 1, controls: [] })).flowModeError).toMatch(/gave no flow mode/)
+})
+
+test('the config mode comes only from wt_controls.py; its error, or no mode, is an error, never DEV', () => {
+  expect(parseControls(JSON.stringify({ schema: 1, controls: [], flow_mode: 'local', config_mode: 'TEST' })).configMode).toBe('TEST')
+  const failed = parseControls(JSON.stringify({ schema: 1, controls: [], flow_mode: 'local', config_mode: null, config_mode_error: 'config mode unreadable: x' }))
+  expect(failed.configMode).toBe(undefined)
+  expect(failed.configModeError).toBe('config mode unreadable: x')
+  expect(parseControls(JSON.stringify({ schema: 1, controls: [], flow_mode: 'local', config_mode: 'dev' })).configModeError).toMatch(/gave no config mode/)
+  expect(parseControls(JSON.stringify({ schema: 1, controls: [], flow_mode: 'local' })).configModeError).toMatch(/gave no config mode/)
 })
 
 test('output that is not JSON or not schema 1 is an error, never an empty list', () => {
@@ -141,6 +209,10 @@ test('events become toasts, the ones to act on first; each read once, a partial 
   expect(newEvents('', first.seen)).toEqual({ events: [], seen: 0 })
   expect(needsYou({ kind: 'run-ended', text: 'run 1: STATUS: done' })).toBe(false)
   expect(needsYou({ kind: 'refused', text: 'x' })).toBe(true)
+  expect(needsYou({ kind: 'step-failed', text: 'run 1: finish failed' })).toBe(true)
+  expect(needsYou({ kind: 'wrapup-failed', text: 'run 1: OSError' })).toBe(true)
+  expect(needsYou({ kind: 'heartbeat-stalled', text: 'run 1: its wrapper runs but its heartbeat is 900 s old' })).toBe(true)
+  expect(needsYou({ kind: 'merged', text: 'x' })).toBe(false)
 })
 
 
@@ -211,7 +283,7 @@ test('"already being approved" and a reason with words before it count as a take
   expect(sentOutcome('merge', 'wt: merge: x run 1 was merged, nothing to approve')).toBe('refused')
 })
 
-// 2026-11-02: wt_controls.py failed (or timed out) while the approval's tests ran, the pane's rows went empty,
+// Seen: wt_controls.py failed (or timed out) while the approval's tests ran, the pane's rows went empty,
 // the mark changed and the pending merge was released; the next good fetch drew the button for a second press.
 test('unreadable controls never release a pending press; the next readable view decides', () => {
   const controls = [{ topic: 'x', why: 'done', isHeld: false, merge: { reason: 'review', files: [] } }]
@@ -234,4 +306,23 @@ test('a press made while the controls were unreadable takes the first readable m
   expect(baselined).toEqual({ ...item, mark: 'm' })
   expect(settle([baselined], () => 'm', [], at + 2000)).toEqual([baselined])
   expect(settle([baselined], () => 'changed', [], at + 3000)).toEqual([])
+})
+
+test('queue_limits: each effective limit with its source; a repo limit says repo', () => {
+  const parsed = parseControls(JSON.stringify({ schema: 1, controls: [], flow_mode: 'local',
+    queue_limits: { workers: 1, usd: 20, source: { workers: 'repo', usd: 'local' } } }))
+  expect(parsed.queueLimits).toEqual({ workers: 1, usd: 20, source: { workers: 'repo', usd: 'local' } })
+  expect(queueLimitsText(parsed.queueLimits)).toBe('limits: 1 worker(s) (repo) · $20 (local)')
+})
+
+test('queue_limits: absent or malformed gives no line; an unknown source is left out', () => {
+  expect(parseControls(JSON.stringify({ schema: 1, controls: [], flow_mode: 'local' })).queueLimits).toBe(undefined)
+  expect(queueLimitsText(undefined)).toBe(undefined)
+  const odd = parseControls(JSON.stringify({ schema: 1, controls: [], flow_mode: 'local',
+    queue_limits: { workers: 2, usd: 'x', source: { workers: 'mine' } } })).queueLimits
+  expect(odd).toEqual({ workers: 2, usd: undefined, source: { workers: undefined, usd: undefined } })
+  expect(queueLimitsText(odd)).toBe('limits: 2 worker(s)')
+  const invalid = parseControls(JSON.stringify({ schema: 1, controls: [], flow_mode: 'local',
+    queue_limits: { workers: 2, usd: 20, source: { workers: 'home (local invalid)', usd: 'home' } } })).queueLimits
+  expect(queueLimitsText(invalid)).toBe('limits: 2 worker(s) (home (local invalid)) · $20 (home)')
 })

@@ -1,4 +1,4 @@
-"""Merge mode (2026-11-01): worker-control.py resumes the branch's session into feature-flow merge.md,
+"""Merge mode: worker-control.py resumes the branch's session into feature-flow merge.md,
 cost-history.py estimates merge runs on their own and imports them apart from the branch row.
 
 Run: uv run --offline --no-project --with pytest python -m pytest ~/.claude/hooks/tests/test_merge_mode.py
@@ -13,9 +13,14 @@ import time
 import pytest
 
 HOOKS = os.environ.get("QG_HOOKS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+import config_fixtures  # noqa: E402
+
+# Programs run from the session's clean copy of the tree (config_fixtures.cleanHome): the person's files in the
+# tree under test (config/local.json, local.test.json, mode, state/) never change a result.
+RUN_HOOKS = os.path.join(config_fixtures.cleanHome(), "hooks")
+COST_HISTORY = os.path.join(config_fixtures.cleanHome(), "skills", "repo-plan", "cost-history.py")
+RUN_SKILLS = os.path.join(config_fixtures.cleanHome(), "skills")
 SKILLS = os.path.join(os.path.dirname(HOOKS), "skills")
-COST_HISTORY = os.path.join(SKILLS, "repo-plan", "cost-history.py")
-DEFAULTS = json.load(open(os.path.join(HOOKS, "budget-defaults.json"), encoding="utf-8"))
 SESSION = "11111111-2222-3333-4444-555555555555"
 COLUMNS = ["date", "topic", "branch", "class", "agent", "round", "estTok", "actTok",
 	"estMin", "actMin", "estUsd", "actUsd", "note"]
@@ -33,11 +38,11 @@ def env(home):
 def project(tmp_path):
 	"""(home, main checkout, worktree, args file) with a fake run-worker.sh that records its arguments."""
 	home = tmp_path / "home"
-	hooks = home / ".claude" / "hooks"
+	hooks = home / ".claude" / "hooks" / "worker"
 	hooks.mkdir(parents=True)
-	(hooks / "budget-defaults.json").write_text(json.dumps(DEFAULTS))
 	argsFile = tmp_path / "args.txt"
-	(hooks / "run-worker.sh").write_text(f"#!/usr/bin/env bash\nprintf '%s\\0' \"$@\" > {argsFile}\n")
+	(hooks / "run-worker.sh").write_text(
+		f"#!/usr/bin/env bash\nprintf '%s\\0' \"$@\" > {argsFile}.part\nmv {argsFile}.part {argsFile}\n")
 	(hooks / "run-worker.sh").chmod(0o755)
 	main = tmp_path / "proj" / "main"
 	(main / "plans" / "worker").mkdir(parents=True)
@@ -62,7 +67,7 @@ def wt(project, prompt):
 	home, main, _, argsFile = project
 	if argsFile.exists():
 		argsFile.unlink()
-	result = subprocess.run([sys.executable, os.path.join(HOOKS, "worker-control.py")],
+	result = subprocess.run([sys.executable, os.path.join(RUN_HOOKS, "worker", "worker-control.py")],
 		input=json.dumps({"prompt": prompt, "cwd": str(main)}), capture_output=True, text=True, env=env(home))
 	assert result.returncode == 0, result.stderr
 	out = json.loads(result.stdout)
@@ -127,8 +132,8 @@ def test_unknown_mode_is_refused(project):
 def home(tmp_path):
 	h = tmp_path / "home"
 	(h / ".claude").mkdir(parents=True)
-	os.symlink(HOOKS, h / ".claude" / "hooks")
-	os.symlink(SKILLS, h / ".claude" / "skills")
+	os.symlink(RUN_HOOKS, h / ".claude" / "hooks")
+	os.symlink(RUN_SKILLS, h / ".claude" / "skills")
 	return h
 
 

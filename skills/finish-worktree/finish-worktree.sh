@@ -28,20 +28,6 @@ commonDir=$(git rev-parse --path-format=absolute --git-common-dir);
 [ "${gitDir}" = "${commonDir}" ] || fail "run this from the main checkout, not a worktree";
 mainRoot=$(dirname "${commonDir}");
 
-# The topic's recorded flow mode (worker-control.py, at launch) decides, not the current `wt local`.
-record="$(dirname "${mainRoot}")/worktrees/${target##*/}/.hook-only/flow-mode";
-if [ -f "${record}" ]; then
-	if [ "$(tr -d '[:space:]' < "${record}")" = "local" ]; then export FLOW_INTEGRATION=local; else unset FLOW_INTEGRATION; fi
-fi
-# Local mode (FLOW_INTEGRATION=local) compares with the local default branch: no fetch needed.
-if [ "${FLOW_INTEGRATION:-}" != "local" ]; then
-	statusFile="${commonDir}/claude-fetch-status";
-	[ -f "${statusFile}" ] || fail "no fetch status; invoke the skill again so the fetch hook runs";
-	read -r fetchedAt fetchResult fetchDetail < "${statusFile}";
-	[ "${fetchResult}" = "ok" ] || fail "last fetch failed: ${fetchDetail:-unknown}";
-	[ $(( $(date +%s) - fetchedAt )) -le 600 ] || fail "last fetch is older than 10 minutes; invoke the skill again";
-fi
-
 path="";
 branch="";
 current="";
@@ -59,7 +45,20 @@ done < <(git worktree list --porcelain);
 [ -n "${path}" ] || fail "no worktree for ${target}";
 [ "${path}" != "${mainRoot}" ] || fail "${target} is the main checkout";
 
-base=$(bash ~/.claude/skills/feature-flow/base-ref.sh) || fail "cannot find the integration branch (base-ref.sh)";
+# The topic's flow mode (homeconfig.py flow-mode of its worktree: its record, written at launch, else the
+# main checkout's) decides, not the current `wt local`. Local mode compares with the local default
+# branch: no fetch needed.
+here=$(dirname "$(readlink -f "$0")");
+mode=$(python3 "${here}/../../config/homeconfig.py" flow-mode "${path}") || fail "no valid flow mode (homeconfig.py flow-mode ${path})";
+if [ "${mode}" != "local" ]; then
+	statusFile="${commonDir}/claude-fetch-status";
+	[ -f "${statusFile}" ] || fail "no fetch status; invoke the skill again so the fetch hook runs";
+	read -r fetchedAt fetchResult fetchDetail < "${statusFile}";
+	[ "${fetchResult}" = "ok" ] || fail "last fetch failed: ${fetchDetail:-unknown}";
+	[ $(( $(date +%s) - fetchedAt )) -le 600 ] || fail "last fetch is older than 10 minutes; invoke the skill again";
+fi
+
+base=$(bash ~/.claude/skills/feature-flow/base-ref.sh "${path}") || fail "cannot find the integration branch (base-ref.sh)";
 git merge-base --is-ancestor "${branch}" "${base}" || fail "${branch} is not merged into ${base} yet";
 
 # Untracked PR descriptions are expected leftovers; anything else would be lost.
@@ -86,7 +85,7 @@ fi
 git -C "${mainRoot}" worktree remove --force "${path}" || fail "git worktree remove failed for ${path}";
 # git deletes .git/worktrees when its last worktree is removed. A session that is still running then
 # sees that path as an empty read-only sandbox mount and can't create a worktree until the directory
-# exists again (seen 2026-10-30), so keep it.
+# exists again, so keep it.
 mkdir -p "$(git -C "${mainRoot}" rev-parse --path-format=absolute --git-common-dir)/worktrees" || fail "worktree removed, but recreating .git/worktrees failed";
 echo "REMOVED: worktree ${path} (branch ${branch} kept)";
 # -D, not -d: the list holds only branches merged into the integration branch, and -d compares with

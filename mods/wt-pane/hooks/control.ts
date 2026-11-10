@@ -1,19 +1,34 @@
 // What a person (pane buttons) or auto mode may start or stop for each topic. The decisions are not
-// made here: ~/.claude/hooks/wt_controls.py makes them (worker-control.py imports the same functions,
+// made here: ~/.claude/hooks/worker/wt_controls.py makes them (worker-control.py imports the same functions,
 // so a typed `wt resume` and a button agree), and the pane runs it and draws what it prints. This file
 // reads that output (schema 1) and words the notes. Every action still ends as the prompt
-// `wt launch|resume|stop <topic>`, so worker-control.py (UserPromptSubmit) stays the one place that
+// `wt launch|resume|stop|wrapup <topic>`, so worker-control.py (UserPromptSubmit) stays the one place that
 // starts and stops workers, and typing `wt ...` by hand keeps working unchanged.
 
-import type { Action, Control, Notice, Notices, Pending, PlannedRow, QueueRow, View } from '../types'
+import type { Action, ConfigMode, Control, FlowMode, LimitSource, Notice, Notices, Pending, Phase, PlannedRow, QueueLimits, QueueRow, RunTodo, View } from '../types'
 
 // worker-control.py's topic rule.
 export const TOPIC = /^[a-z0-9][a-z0-9-]{0,63}$/
 // The output version this pane reads; wt_controls.py raises it when a field is removed or renamed.
 export const SCHEMA = 1
-const ACTIONS = new Set<string>(['launch', 'resume', 'stop'])
+const ACTIONS = new Set<string>(['launch', 'resume', 'stop', 'wrapup'])
+// hooks/lib/runstate.py's phases (wt_controls.py "phase"); another value is shown as no phase.
+const PHASES = new Set<string>(['none', 'launching', 'running', 'finishing', 'ended', 'orphan', 'unknown'])
 
-export type Controls = { controls: Control[]; queue?: QueueRow[]; planned?: PlannedRow[]; localBlocker?: string; error?: string }
+// flowMode: the main checkout's flow mode as wt_controls.py read it (homeconfig.flowMode); flowModeError when
+// it couldn't (an invalid flow-mode record, a broken config/registry/env.json): the pane shows that, never a guessed mode.
+export type Controls = {
+  controls: Control[]
+  queue?: QueueRow[]
+  planned?: PlannedRow[]
+  queueLimits?: QueueLimits
+  localBlocker?: string
+  flowMode?: FlowMode
+  flowModeError?: string
+  configMode?: ConfigMode
+  configModeError?: string
+  error?: string
+}
 
 function plannedRowOf(value: unknown): PlannedRow | undefined {
   if (!isObject(value) || typeof value.topic !== 'string' || !TOPIC.test(value.topic)) return undefined
@@ -35,6 +50,32 @@ export function queueAllText(planned: PlannedRow[]): string | undefined {
 }
 
 const QUEUE_STATES = new Set<string>(['waiting', 'started', 'merged'])
+const LIMIT_SOURCES = new Set<string>(['home', 'local', 'repo', 'home (local invalid)'])
+
+// wt_controls.py "queue_limits" (wt_queue.limits); undefined when absent or not an object.
+function queueLimitsOf(value: unknown): QueueLimits | undefined {
+  if (!isObject(value)) return undefined
+  const given = isObject(value.source) ? value.source : {}
+  const sourceOf = (limit: string): LimitSource | undefined =>
+    typeof given[limit] === 'string' && LIMIT_SOURCES.has(given[limit] as string) ? (given[limit] as LimitSource) : undefined
+  return {
+    workers: typeof value.workers === 'number' ? value.workers : undefined,
+    usd: typeof value.usd === 'number' ? value.usd : undefined,
+    source: { workers: sourceOf('workers'), usd: sourceOf('usd') },
+  }
+}
+
+// The line under the queue: each effective limit and where it comes from ("repo" = the repo's flow.json is
+// lower than the person's); undefined without limits.
+export function queueLimitsText(limits: QueueLimits | undefined): string | undefined {
+  if (!limits || (limits.workers === undefined && limits.usd === undefined)) return undefined
+  const part = (text: string, source: LimitSource | undefined) => (source ? `${text} (${source})` : text)
+  const parts = [
+    ...(limits.workers !== undefined ? [part(`${limits.workers} worker(s)`, limits.source.workers)] : []),
+    ...(limits.usd !== undefined ? [part(`$${limits.usd}`, limits.source.usd)] : []),
+  ]
+  return `limits: ${parts.join(' · ')}`
+}
 
 function queueRowOf(value: unknown): QueueRow | undefined {
   if (!isObject(value) || typeof value.topic !== 'string' || !TOPIC.test(value.topic)) return undefined
@@ -51,6 +92,40 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
+function todoOf(value: unknown): RunTodo | undefined {
+  if (!isObject(value)) return undefined
+  return {
+    text: typeof value.text === 'string' ? value.text : undefined,
+    command: typeof value.command === 'string' ? value.command : undefined,
+  }
+}
+
+// The run's display fields (migration step 3 of the run record): "phase" and "human" (runstate.human: the
+// person's line and to-do, in the status_language setting), or "status_error". Rows from hooks without them
+// parse as before.
+function displayOf(value: Record<string, unknown>): Pick<Control, 'phase' | 'human' | 'statusError'> {
+  const human = isObject(value.human) && typeof value.human.line === 'string'
+    ? { line: value.human.line, todo: todoOf(value.human.todo) }
+    : undefined
+  return {
+    ...(typeof value.phase === 'string' && PHASES.has(value.phase) ? { phase: value.phase as Phase } : {}),
+    ...(human ? { human } : {}),
+    ...(typeof value.status_error === 'string' ? { statusError: value.status_error } : {}),
+  }
+}
+
+// The line under a control row: what the run is doing (the person's line and its to-do text, when there is
+// one), or why the run state couldn't be read. Yellow for an orphan (the run may have died or did), red for an
+// unknown state or an error; undefined when the hooks printed neither. Display only: the buttons still follow
+// the row's action.
+export function runLine(row: Control): { text: string; color?: 'yellow' | 'red' } | undefined {
+  if (row.statusError !== undefined) return { text: row.statusError, color: 'red' }
+  if (!row.human) return undefined
+  const todo = row.human.todo?.text
+  const text = todo ? `${row.human.line} → ${todo}` : row.human.line
+  return { text, color: row.phase === 'orphan' ? 'yellow' : row.phase === 'unknown' ? 'red' : undefined }
+}
+
 function rowOf(value: unknown): Control | undefined {
   if (!isObject(value) || typeof value.topic !== 'string' || !TOPIC.test(value.topic)) return undefined
   const auto = isObject(value.auto) ? value.auto : {}
@@ -64,6 +139,7 @@ function rowOf(value: unknown): Control | undefined {
   return {
     ...(merge ? { merge } : {}),
     ...(approving ? { approving } : {}),
+    ...displayOf(value),
     topic: value.topic,
     action: typeof value.action === 'string' && ACTIONS.has(value.action) ? (value.action as Action) : undefined,
     why: typeof value.why === 'string' ? value.why : undefined,
@@ -86,6 +162,21 @@ export function parseControls(stdout: string): Controls {
   }
   const controls = data.controls.map(rowOf).filter((row): row is Control => row !== undefined)
   const localBlocker = typeof data.local_blocker === 'string' ? data.local_blocker : undefined
+  const flowMode = data.flow_mode === 'origin' || data.flow_mode === 'local' ? (data.flow_mode as FlowMode) : undefined
+  const flowModeError =
+    typeof data.flow_mode_error === 'string'
+      ? data.flow_mode_error
+      : flowMode === undefined
+        ? `wt_controls.py gave no flow mode (${JSON.stringify(data.flow_mode)})`
+        : undefined
+  // The config mode (homeconfig.configMode, DEV or TEST): its error, or no mode, is an error, never DEV.
+  const configMode = data.config_mode === 'DEV' || data.config_mode === 'TEST' ? (data.config_mode as ConfigMode) : undefined
+  const configModeError =
+    typeof data.config_mode_error === 'string'
+      ? data.config_mode_error
+      : configMode === undefined
+        ? `wt_controls.py gave no config mode (${JSON.stringify(data.config_mode)})`
+        : undefined
   const queue = Array.isArray(data.queue)
     ? data.queue.map(queueRowOf).filter((row): row is QueueRow => row !== undefined)
     : []
@@ -99,7 +190,8 @@ export function parseControls(stdout: string): Controls {
       : typeof data.queue_error === 'string'
         ? data.queue_error
         : undefined
-  return { controls, queue, planned, localBlocker, error }
+  const queueLimits = queueLimitsOf(data.queue_limits)
+  return { controls, queue, planned, queueLimits, localBlocker, flowMode, flowModeError, configMode, configModeError, error }
 }
 
 // The topic of a write to <main>/plans/worker/<topic>.json, else undefined.
@@ -128,11 +220,15 @@ export function autoStep(topic: string, row: Control | undefined): { submit?: st
 }
 
 // One line of <main>/.hook-only/events.jsonl (wt_events.py), and the toast it becomes: the ones the person
-// must act on (a refusal, a failed start or finish, a run that stopped short of done) say so first.
+// must act on (a refusal, a failed start, step, wrap-up or finish, a run that stopped short of done) say so first.
 export type WtEvent = { t?: string; kind?: string; topic?: string; text?: string }
 
+// wt_events.py ATTENTION (hooks/tests/test_wt_events.py checks the two lists agree).
+const ATTENTION = new Set(['refused', 'queue-failed', 'finish-failed', 'step-failed', 'wrapup-failed', 'heartbeat-stalled',
+  'step-at-limit', 'merge-slow', 'limit-unreadable'])
+
 export function needsYou(event: WtEvent): boolean {
-  if (event.kind === 'refused' || event.kind === 'queue-failed' || event.kind === 'finish-failed') return true
+  if (ATTENTION.has(event.kind ?? '')) return true
   const status = (event.text ?? '').split(': ').slice(1).join(': ')
   return event.kind === 'run-ended' && !status.startsWith('STATUS: done')
 }
@@ -162,7 +258,7 @@ export function newEvents(text: string, seen: number): { events: WtEvent[]; seen
 
 export type AutoCommand = 'on' | 'off' | 'show'
 
-// `wt auto`, `wt auto on`, `wt auto off`; worker-control.py's regex takes only launch|resume|stop.
+// `wt auto`, `wt auto on`, `wt auto off`; worker-control.py's regexes take only launch|resume|stop, merge and wrapup.
 export function autoCommand(text: string): AutoCommand | undefined {
   const match = /^\s*wt\s+auto(?:\s+(on|off))?\s*$/.exec(text)
   if (!match) return undefined
@@ -187,7 +283,7 @@ export function label(action: Action, isArmed: boolean): string {
   return isArmed ? `confirm ${action}?` : action
 }
 
-// ---- Sent buttons and notices (2026-11-02: a pressed `merge` showed nothing for minutes, toasts were cut
+// ---- Sent buttons and notices (so a pressed `merge` never shows nothing for minutes, nor a toast cut
 // short). A pressed button's prompt is Pending until its outcome shows; events and refusals become Notices.
 
 // The state of a topic's row the pane can see, compared before and after a press: a change (the run
@@ -208,7 +304,7 @@ export function markOf(topic: string, controls: Control[], queue: QueueRow[], pl
 
 // The marks of the pane's current view, or undefined for every topic while wt_controls.py's output was
 // unreadable (failed, timed out, another schema, plans/ or the queue hidden): its rows are then empty or
-// partial, and a mark read from them is no outcome. 2026-11-02: a fetch that failed while the approval's
+// partial, and a mark read from them is no outcome. Seen: a fetch that failed while the approval's
 // tests loaded the machine emptied the rows, the mark changed, the pending `merge` was released, and the
 // next good fetch drew the merge button again for a second press.
 export function marksOf(view: Pick<View, 'controls' | 'queue' | 'planned' | 'controlsError'>): (topic: string) => string | undefined {

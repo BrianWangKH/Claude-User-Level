@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy to <repo>/.claude/quality-gates.json for a Go repo whose go.mod is at the repo root. \"go\": {} runs crap-gate.py and mutation.py on the home Go profile alone (~/.claude/config/home.json toolchains languages.go: coverage with -coverpkg=./..., go test -failfast, gofmt -l and go vet as checks); a key added here replaces the profile's (e.g. \"cwd\": \"<dir>\" when go.mod lives in a subdirectory). The other keys and their meaning: ~/.claude/templates/quality-gates.json (the Python version).",
+  "languages": {
+    "go": {}
+  },
+  "exclude": [],
+  "auto_merge_hold": [],
+  "limits": {}
+}

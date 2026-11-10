@@ -5,7 +5,8 @@ Two callers:
     reports anything missing as additionalContext; prints nothing when all is well.
   - skill repo-plan (no flags): prints one line per check and a final STATE line. Report only.
 
-Checks come from repo-check.json next to this script, so adding a check is one entry:
+Checks come from repo-check.json next to this script (`--checks <file>` names another, for tests; no environment
+variable can), so adding a check is one entry:
   {"id": ..., "type": "exists" | "ignored" | "grep", "path": ..., "pattern": ..., "kickoff": bool,
    "hint": ...}
   - exists:  path exists in the checkout
@@ -26,12 +27,17 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CHECKS_FILE = os.environ.get("REPO_CHECK_FILE") or os.path.join(HERE, "repo-check.json")
+CHECKS_FILE = os.path.join(HERE, "repo-check.json")
 HOOK_ONLY = ".hook-only"
 
 
+# Never run the repo's own hooks or fsmonitor: tools/new-repo.py calls this script outside the sandbox, on a repo
+# whose config the person or a test may not have written.
+SAFE_GIT = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
+
+
 def git(root, *args):
-	return subprocess.run(["git", "-C", root, *args], capture_output=True, text=True)
+	return subprocess.run(["git", *SAFE_GIT, "-C", root, *args], capture_output=True, text=True)
 
 
 def isIgnored(root, path):
@@ -63,8 +69,8 @@ def builtIn(root, commonDir, fix):
 	return results
 
 
-def configured(root, fixKickoff):
-	with open(CHECKS_FILE, encoding="utf-8") as f:
+def configured(root, fixKickoff, checksFile=CHECKS_FILE):
+	with open(checksFile, encoding="utf-8") as f:
 		checks = json.load(f)["checks"]
 	results = []
 	for check in checks:
@@ -87,7 +93,7 @@ def configured(root, fixKickoff):
 	return results
 
 
-def run(cwd, fix):
+def run(cwd, fix, checksFile=CHECKS_FILE):
 	top = git(cwd, "rev-parse", "--show-toplevel")
 	if top.returncode != 0:
 		return None, "not a git repo"
@@ -97,7 +103,7 @@ def run(cwd, fix):
 	if gitDir != commonDir:
 		return None, "worktree"
 	kickoff = {}
-	results = builtIn(root, commonDir, fix) + configured(root, kickoff)
+	results = builtIn(root, commonDir, fix) + configured(root, kickoff, checksFile)
 	missing = [r for r in results if r[0] == "MISSING"]
 	if any(kickoff.get(r[1]) for r in missing):
 		state = "new"
@@ -108,6 +114,16 @@ def run(cwd, fix):
 	return results, state
 
 
+def checksFileOf(argv):
+	"""`--checks <file>`'s file, else repo-check.json next to this script."""
+	if "--checks" not in argv:
+		return CHECKS_FILE
+	at = argv.index("--checks")
+	if at + 1 >= len(argv):
+		raise ValueError("--checks needs a file")
+	return argv[at + 1]
+
+
 def main():
 	hook = "--hook" in sys.argv
 	if hook:
@@ -115,7 +131,7 @@ def main():
 		cwd = os.environ.get("CLAUDE_PROJECT_DIR") or data.get("cwd") or os.getcwd()
 	else:
 		cwd = os.getcwd()
-	results, state = run(cwd, fix=hook)
+	results, state = run(cwd, fix=hook, checksFile=checksFileOf(sys.argv))
 	if results is None:
 		if not hook:
 			print(f"SKIP: {state} (run from the main checkout)")

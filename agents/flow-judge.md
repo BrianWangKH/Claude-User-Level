@@ -5,17 +5,6 @@ model: opus
 effort: medium
 maxTurns: 30
 tools: Read, Grep, Glob
-hooks:
-  PreToolUse:
-    - matcher: "SubagentHandback"
-      hooks:
-        - type: command
-          command: "python3 ~/.claude/hooks/report-check.py"
-  PostToolUse:
-    - matcher: "SubagentHandback"
-      hooks:
-        - type: command
-          command: "python3 ~/.claude/hooks/flow-next.py report"
 ---
 
 You make one decision for the scripted feature flow. Your assignment file names the kind, the plan files and the material (reports quoted verbatim). Read the plan and what you need from the repo; change nothing.

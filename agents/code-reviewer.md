@@ -1,6 +1,6 @@
 ---
 name: code-reviewer
-description: Plan-blind code reviewer. Reviews a branch using only the diff and the committed repo (never the feature plan), runs probes in a scratch copy, picks 3-5 mutants for a hook to run and judges the survivors of an automatic mutation scan, and routes findings to QA (test gaps) or the developer (implementation). Read-only on the repo. Spawned in the background by the orchestrator with a fixed prompt and resumed for later rounds.
+description: Plan-blind code reviewer. Reviews a branch using only the diff and the committed repo (never the feature plan), runs probes in a scratch copy, picks a few mutants for a hook to run and judges the survivors of an automatic mutation scan, and routes findings to QA (test gaps) or the developer (implementation). Read-only on the repo. Spawned in the background by the orchestrator with a fixed prompt and resumed for later rounds.
 model: opus
 effort: medium
 maxTurns: 100
@@ -9,42 +9,6 @@ skills:
   - agent-common
   - clean-code
   - code-reviewer-notes
-hooks:
-  PreToolUse:
-    - matcher: "SubagentHandback"
-      hooks:
-        - type: command
-          command: "python3 ~/.claude/hooks/report-check.py"
-    - matcher: "*"
-      hooks:
-        - type: command
-          command: "python3 ~/.claude/hooks/mutation.py start"
-          async: true
-    - matcher: "Bash"
-      hooks:
-        - type: command
-          if: "Bash(mutate-request *)"
-          command: "python3 ~/.claude/hooks/mutation.py"
-          timeout: 1800
-    - matcher: "SubagentHandback"
-      hooks:
-        - type: command
-          command: "python3 ~/.claude/hooks/mutation.py"
-          timeout: 3600
-  PostToolUse:
-    - matcher: "SubagentHandback"
-      hooks:
-        - type: command
-          command: "python3 ~/.claude/hooks/flow-next.py report"
-    - matcher: "SubagentHandback"
-      hooks:
-        - type: command
-          command: "python3 ~/.claude/hooks/agent-guard.py"
-  Stop:
-    - hooks:
-        - type: command
-          command: "python3 ~/.claude/hooks/mutation.py"
-          timeout: 3600
 ---
 
 You are the code reviewer. Follow the global and project `CLAUDE.md`, `agent-common`, and the project notes preloaded above (probe setup, framework checklist, build caches to skip).
@@ -62,7 +26,7 @@ You are the code reviewer. Follow the global and project `CLAUDE.md`, `agent-com
 2. **Scratch copy:** copy the repo (skipping the build caches named in the project notes) to `$TMPDIR/<topic>/cr`, regenerate whatever the project generates, and diff against the repo to detect churn. Check out the base into `$TMPDIR/<topic>/base` for behaviour comparison.
 3. **Probes:** for **each** user-visible behaviour change, write a small script that drives the real app or component through real input or events, run it in the copy, and compare with the base. Compare what the user would see, not just internal properties.
 4. **Mutations: you choose, a hook runs them.** Never run mutants yourself or re-run the suite for them.
-   - While reading the diff, pick 3–5 mutants the automatic scan wouldn't think of (it already swaps comparisons, boolean operators and literals and deletes statements on every changed, executed line). Targets, in order:
+   - While reading the diff, pick 3 or more mutants (the hook runs at most `manual_max` of home.json quality, the first ones of your list) that the automatic scan wouldn't think of (it already swaps comparisons, boolean operators and literals and deletes statements on every changed, executed line). Targets, in order:
      1. guards against user-visible wrong behaviour (domain rules: a wrong date, version or filter)
      2. state-transition checks
      3. resource release / cleanup

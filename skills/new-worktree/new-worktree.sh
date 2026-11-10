@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Create a feature branch and its worktree at <parent of main repo>/worktrees/<topic>,
 # based on the integration branch (base-ref.sh: origin's default branch, or the local main in local
-# mode). Run from the main checkout, after a fresh fetch (the fetch-origin hook fetches when this skill
+# mode; the main checkout's flow mode, homeconfig.py flow-mode). Run from the main checkout, after a fresh fetch (the fetch-origin hook fetches when this skill
 # is invoked; local mode needs none).
 # Usage: bash new-worktree.sh <type>/<scope>/<topic>
 # Exit: 0 created, 1 precondition failed, 2 usage error.
@@ -23,8 +23,10 @@ gitDir=$(git rev-parse --absolute-git-dir 2>/dev/null) || fail "not inside a git
 commonDir=$(git rev-parse --path-format=absolute --git-common-dir);
 [ "${gitDir}" = "${commonDir}" ] || fail "run this from the main checkout, not a worktree";
 
-# Local mode (FLOW_INTEGRATION=local) compares with the local default branch: no fetch needed.
-if [ "${FLOW_INTEGRATION:-}" != "local" ]; then
+# Local mode compares with the local default branch: no fetch needed.
+here=$(dirname "$(readlink -f "$0")");
+mode=$(python3 "${here}/../../config/homeconfig.py" flow-mode .) || fail "no valid flow mode (homeconfig.py flow-mode)";
+if [ "${mode}" != "local" ]; then
 	statusFile="${commonDir}/claude-fetch-status";
 	[ -f "${statusFile}" ] || fail "no fetch status; invoke the skill again so the fetch hook runs";
 	read -r fetchedAt fetchResult fetchDetail < "${statusFile}";

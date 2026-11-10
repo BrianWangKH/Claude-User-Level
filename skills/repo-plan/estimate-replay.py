@@ -2,12 +2,12 @@
 """Replay the estimate model over the cost history: how many rounds would it have stopped?
 
 Usage: estimate-replay.py [<history.tsv>] [--window <n>] [--quantile <q>]
-Defaults: this checkout's history (cost-history.py historyPath) and estimate_window /
-estimate_fixed_quantile from budget-defaults.json. For each subagent type, each worker class and the
+Defaults: this checkout's history (cost-history.py historyPath) and estimate_window_count /
+estimate_fixed_quantile from home.json budget. For each subagent type, each worker class and the
 branch rows, in date order, every row with a raw estimate gets the budget cost-history.py's model()
 would have given from the rows before it; it counts as stopped when its actual USD or minutes exceed
-budget_headroom x that budget (where the hooks stop it). Also prints the median budget / actual, the
-room the model leaves. Run it before changing estimate_window or estimate_fixed_quantile, and now and
+budget_headroom_factor x that budget (where the hooks stop it). Also prints the median budget / actual, the
+room the model leaves. Run it before changing estimate_window_count or estimate_fixed_quantile, and now and
 then as the history grows. A budget-stopped row's actual is a lower bound of its need, the same for
 every setting compared.
 """
@@ -36,7 +36,7 @@ def replay(groups, window, q, headroom):
 	room = []
 	for seq in groups.values():  # oldest first
 		for i, row in enumerate(seq):
-			pairs = {m: (ch.number(row[e]), ch.number(row[a])) for m, e, a in ch.METRICS if m != "tokens"}
+			pairs = {m: (ch.number(row[e]), ch.number(row[a])) for m, e, a in ch.METRICS}
 			if not all(e and a for e, a in pairs.values()):
 				continue
 			fitted = ch.model(list(reversed(seq[:i])), window, q)
@@ -54,7 +54,7 @@ def main(argv):
 	window = option(args, "--window", int, window)
 	q = option(args, "--quantile", float, q)
 	path = args[0] if args else ch.historyPath()
-	headroom = float(ch.loadDefaults().get("budget_headroom", 1.25))
+	headroom = float(ch.loadDefaults()["budget_headroom_factor"])
 	rows = [r for r in ch.load(path) if ch.isValid(r) and ch.RAW_MARK in (r.get("note") or "")]
 	agents, workers, branches = {}, {}, {}
 	for r in rows:

@@ -1,0 +1,20 @@
+{
+ "_comment": "Registry of event names in the per-checkout event stream (hooks/RULES.md E2-E4): name -> the keys its data object must have. hooks/lib/eventlog.py refuses an unregistered name or missing data keys; hooks/tools/new-artifact.py adds entries. A registry (config/registry/): config/local.json can't override it. Keys are event names (kebab-case, noun-past-participle), a value-as-key table.",
+ "events": {
+  "gate-deadline": {
+   "data": ["gate", "key", "seconds"]
+  },
+  "hook-failed": {
+   "data": ["hook", "policy", "error"]
+  },
+  "run-orphaned": {
+   "data": ["by", "orphan_of"]
+  },
+  "run-ended": {
+   "data": ["reason", "code"]
+  },
+  "status-diverged": {
+   "data": ["field", "record", "legacy"]
+  }
+ }
+}

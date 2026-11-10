@@ -6,7 +6,7 @@ user-invocable: false
 
 # Clean code
 
-Complexity numbers (CCN, CRAP, unexecuted lines) belong to crap-gate and formatting to the project's formatter and linter: don't restate or second-guess them. These rules cover what a tool can't judge. Project `CLAUDE.md` 「慣例」 and the plan win over this file.
+Complexity numbers (CCN, CRAP, unexecuted lines) belong to crap-gate and formatting to the project's formatter and linter: don't restate or second-guess them. These rules cover what a tool can't judge. Project `CLAUDE.md` `Conventions` (older projects: 慣例) and the plan win over this file.
 
 | Id | Rule |
 |---|---|
@@ -16,7 +16,7 @@ Complexity numbers (CCN, CRAP, unexecuted lines) belong to crap-gate and formatt
 | C4 | **No dead code.** No unused imports, parameters, variables or branches, no commented-out code, no "just in case" options nobody passes. |
 | C5 | **Comments say why, not what.** Explain a non-obvious reason, a source (doc link, regulation) or a trade-off. No comment that restates the code; no `TODO` without a matching line in the project's TODO. |
 | C6 | **Errors are loud.** No bare or broad catch that hides a failure, no silent default that turns missing data into a plausible number (a wrong number someone trusts is worse than a crash). Validate at the boundary where data enters; the core trusts its inputs. |
-| C7 | **Pure core, effects at the edge.** Calculations take values and return values; I/O, clock, randomness and config loading sit at the edge and are passed in (global `CLAUDE.md` 「原則」). |
+| C7 | **Pure core, effects at the edge.** Calculations take values and return values; I/O, clock, randomness and config loading sit at the edge and are passed in (global `CLAUDE.md` "Principles"). |
 | C8 | **Explicit boundaries.** Public functions and module interfaces have type annotations and say their units (shares vs. thousands, TWD vs. thousand TWD). |
 | C9 | **Change only what the task needs.** Follow the file's existing patterns; no unrelated renames, reformatting or refactors in the diff. A refactor that the task really needs is mentioned in the report. |
 
@@ -26,4 +26,4 @@ Apply the rules while writing; they never justify changing a test or skipping a 
 
 ## Code reviewer
 
-A quality finding cites the rule (`C3`) with `file:line` and a concrete change. C6 findings that can produce a wrong number count as correctness, not style. Everything else is a quality finding; the orchestrator decides must-fix vs TODO (feature-flow 「Must-fix vs TODO」). Don't report what crap-gate or the linter already reports.
+A quality finding cites the rule (`C3`) with `file:line` and a concrete change. C6 findings that can produce a wrong number count as correctness, not style. Everything else is a quality finding; the orchestrator decides must-fix vs TODO (feature-flow "Must-fix vs TODO"). Don't report what crap-gate or the linter already reports.

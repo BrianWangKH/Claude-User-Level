@@ -1,0 +1,210 @@
+{
+ "_comment": "Registry of runtime state kinds (hooks/RULES.md S8): where each lives under <checkout>/.hook-only/ (or, with \"location\": \"home\", under <home>/state/<component>/: home-level state no checkout owns, written and read with root None, S1), its format, schema version, writer, whether more than one program writes it (multi_writer; then lock = the file pattern plus .lock, statefile.locked, S9) and retention (S10: until-archive, days:<settings key>, or replaced: one file every write replaces). hooks/lib/statefile.py writes only kinds listed here and refuses an object whose schema differs; hooks/tools/new-artifact.py adds entries. A registry (config/registry/): config/local.json can't override it. Keys are kind names (kebab-case), a value-as-key table. Existing state files are not listed yet: they move here category by category (debt in hooks/tests/conformance.snapshot.json).",
+ "kinds": {
+  "event-log": {
+   "component": "events",
+   "file_pattern": "log.jsonl",
+   "format": "jsonl",
+   "schema": 1,
+   "writer": "hooks/lib/eventlog.py",
+   "multi_writer": false,
+   "retention": "until-archive",
+   "strict": false
+  },
+  "stop-block": {
+   "component": "stop-blocks",
+   "file_pattern": "{id}.json",
+   "format": "json",
+   "schema": 1,
+   "writer": "hooks/lib/hookio.py",
+   "multi_writer": false,
+   "retention": "until-archive",
+   "strict": false
+  },
+  "hook-error": {
+   "component": "hook-errors",
+   "file_pattern": "{id}.json",
+   "format": "json",
+   "schema": 1,
+   "writer": "hooks/lib/hookio.py",
+   "multi_writer": false,
+   "retention": "until-archive",
+   "strict": false
+  },
+  "run-record": {
+   "component": "runs",
+   "file_pattern": "{id}.json",
+   "format": "json",
+   "schema": 1,
+   "writer": "hooks/lib/runstate.py",
+   "multi_writer": true,
+   "retention": "until-archive",
+   "strict": false,
+   "lock": "{id}.json.lock"
+  },
+  "finish-record": {
+   "component": "archive",
+   "file_pattern": "{id}.finish.json",
+   "format": "json",
+   "schema": 1,
+   "writer": "hooks/worker/auto-finish.py",
+   "multi_writer": false,
+   "retention": "until-archive",
+   "strict": false
+  },
+  "finish-progress": {
+   "component": "finish",
+   "file_pattern": "{id}.json",
+   "format": "json",
+   "schema": 1,
+   "writer": "hooks/worker/auto-finish.py",
+   "multi_writer": false,
+   "retention": "until-archive",
+   "strict": false
+  },
+  "reconcile-claim": {
+   "component": "reconcile",
+   "file_pattern": "claim.json",
+   "format": "json",
+   "schema": 1,
+   "writer": "hooks/worker/reconciler.py",
+   "multi_writer": true,
+   "retention": "replaced",
+   "strict": false,
+   "lock": "claim.json.lock"
+  },
+  "reconcile-trigger": {
+   "component": "reconcile",
+   "file_pattern": "trigger.json",
+   "format": "json",
+   "schema": 1,
+   "writer": "hooks/worker/reconciler.py",
+   "multi_writer": true,
+   "retention": "replaced",
+   "strict": false,
+   "lock": "trigger.json.lock"
+  },
+  "merge-intent": {
+   "component": "auto-merge",
+   "file_pattern": "intent-{id}.json",
+   "format": "json",
+   "schema": 1,
+   "writer": "hooks/worker/auto-merge.py",
+   "multi_writer": false,
+   "retention": "until-archive",
+   "strict": false
+  },
+  "run-heartbeat": {
+   "component": "runs",
+   "file_pattern": "{id}-heartbeat.json",
+   "format": "json",
+   "schema": 1,
+   "writer": "hooks/lib/runstate.py",
+   "multi_writer": false,
+   "retention": "until-archive",
+   "strict": false
+  },
+  "run-ending": {
+   "component": "runs",
+   "file_pattern": "{id}-ending.json",
+   "format": "json",
+   "schema": 1,
+   "writer": "hooks/worker/run_ending.py",
+   "multi_writer": false,
+   "retention": "until-archive",
+   "strict": false
+  },
+  "run-ending-cut": {
+   "component": "runs",
+   "file_pattern": "{id}-ending-cut.json",
+   "format": "json",
+   "schema": 1,
+   "writer": "hooks/worker/run_ending.py",
+   "multi_writer": false,
+   "retention": "until-archive",
+   "strict": false
+  },
+  "run-divergence": {
+   "component": "runs",
+   "file_pattern": "{id}-divergence.json",
+   "format": "json",
+   "schema": 1,
+   "writer": "hooks/lib/runstate.py",
+   "multi_writer": true,
+   "retention": "until-archive",
+   "strict": false,
+   "lock": "{id}-divergence.json.lock"
+  },
+  "usage-budget": {
+   "component": "usage",
+   "file_pattern": "budget-{id}.json",
+   "format": "json",
+   "schema": 1,
+   "writer": "hooks/budget/subagent_budget.py",
+   "multi_writer": false,
+   "retention": "until-archive",
+   "strict": true
+  },
+  "usage-progress": {
+   "component": "usage",
+   "file_pattern": "progress-{id}.json",
+   "format": "json",
+   "schema": 1,
+   "writer": "hooks/budget/worker-progress.py",
+   "multi_writer": false,
+   "retention": "until-archive",
+   "strict": true
+  },
+  "usage-dispatch": {
+   "component": "usage",
+   "file_pattern": "dispatch-{id}.json",
+   "format": "json",
+   "schema": 1,
+   "writer": "hooks/guards/dispatch_guard.py",
+   "multi_writer": false,
+   "retention": "until-archive",
+   "strict": true
+  },
+  "config-loosened": {
+   "component": "config",
+   "file_pattern": "loosened.json",
+   "format": "json",
+   "schema": 1,
+   "writer": "hooks/worker/wt_controls.py",
+   "multi_writer": false,
+   "retention": "until-archive",
+   "strict": false
+  },
+  "config-invalid": {
+   "component": "config",
+   "file_pattern": "invalid.json",
+   "format": "json",
+   "schema": 1,
+   "writer": "hooks/worker/wt_controls.py",
+   "multi_writer": false,
+   "retention": "until-archive",
+   "strict": false
+  },
+  "quota-usage": {
+   "component": "quota",
+   "file_pattern": "usage.json",
+   "format": "json",
+   "schema": 1,
+   "writer": "hooks/budget/quota-snapshot.py",
+   "multi_writer": false,
+   "retention": "replaced",
+   "strict": false,
+   "location": "home"
+  },
+  "rehearsal-repo": {
+   "component": "rehearsal",
+   "file_pattern": "repo.json",
+   "format": "json",
+   "schema": 1,
+   "writer": "hooks/tools/rehearse.py",
+   "multi_writer": false,
+   "retention": "replaced",
+   "strict": false
+  }
+ }
+}

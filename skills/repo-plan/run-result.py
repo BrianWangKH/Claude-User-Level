@@ -1,11 +1,23 @@
 #!/usr/bin/env python3
-"""Judge one headless worker run from its files, for the planning session (main checkout).
+"""Judge one headless worker run, for the planning session (main checkout).
 
 Usage: python3 run-result.py <topic> [<run>] [--wait]
-  <run>   default: the highest-numbered start-<n> in <worktree>/.hook-only/runs/
-  --wait  sleep until exit-<run> exists (run it with run_in_background; never check the worker's PID)
+  <run>   default: the topic's current run (hooks/lib/runstate.py status: the highest record or file number)
+  --wait  read the status again every status_wait_poll_seconds (budget run_state) until the run is
+          ended, an orphan, unknown or absent (runstate.WAIT_ENDS), then print (run it with
+          run_in_background; never check the worker's PID). A run that dies without its exit file turns
+          orphan, so the wait always ends
 
-Reads <main>/../worktrees/<topic>/.hook-only/runs/: start-<n>, exit-<n> ("<code> <time>"),
+Output (migration step 3 of the run record: a display reader; nothing decides on it): first runstate.agent
+with runstate.detail, the status's KEY lines (PHASE, BUSY, RESUMABLE, TODO, ...), the line for people, the
+evidence and what the run's evidence files say (verify, verifier, merge, the next run, every run's result
+line); then this script's own lines: the run's numbers and Cost row (judge() below, which cost-history.py
+import also uses), what to do next (Next:, from the status's claude part and exit reason), on `done` the
+worktree's diff of .claude and .mcp.json, and the worker's result text to relay. The status is read-only and
+replaces reading exit-<n>, auto-, merge-, verify- and verifier- files here; judge() and its helpers below
+still read today's files for the cost (cost-history.py imports them).
+
+judge() reads <main>/../worktrees/<topic>/.hook-only/runs/: start-<n>, exit-<n> ("<code> <time>"),
 est-<n>.json (the estimate worker-control.py recorded at launch/resume; "mode": "merge" for a merge
 run, skill pr-conflict), stopped-<n> (written by
 `wt stop`), result-<n>.json and compact-<n>-<k>.json (claude -p json output).
@@ -16,21 +28,13 @@ run, skill pr-conflict), stopped-<n> (written by
 - Verdict, first match: no result (exit code, 90 = not logged in) / stopped (stopped-<n>) / failed
   (num_turns 0 or is_error) / the result's STATUS line / no STATUS line (treat as blocked).
   The first three are "invalid" for estimating.
-auto-<n>.json: worker-control.py auto's decision on an automatic resume (written before exit-<n>):
-"resume" -> the next run already started, wait on its exit file instead of acting; "refused" -> why.
-In local mode also worker-control.py auto-merge's: "merge" -> a merge run started because the branch
-lacked the latest main, wait on it the same way.
-verify-<n>.json: verify.py's real-data checks (only when <main>/plans/verify/<topic>.json exists).
-verifier-<n>.json: verifier.py's verdict, the second layer (only when that spec has a "verifier" section).
-In local mode also worker-control.py auto-fix's "fix" (auto-<n>.json): a fix run started because the real data
-showed the branch wrong; wait on it the same way.
-A topic auto-finish.py closed after an automatic merge has no worktree any more: the run files are read
-from <main>/.hook-only/archive/<topic>/.hook-only/runs/ instead (also while --wait is polling).
-merge-<n>.json (local mode): auto-merge.py's decision after `STATUS: done`: "merged" (into the local
-main, commit given) or "refused" (why; a person reviews and merges by hand, or a merge run is needed).
-Prints the verdict, the numbers, the Cost row, what to do next, on `done` the worktree's diff of
-.claude and .mcp.json against origin's default branch, and the result text to relay.
 cost-history.py import uses judge() for the worker and branch rows.
+What main() prints from runstate.detail: the next-run decision (auto-<n>.json: "resume", "merge" or "fix" ->
+that run already started, wait on it instead of acting; "refused" -> why), the real-data checks
+(verify-<n>.json, verifier-<n>.json) and the automatic merge (merge-<n>.json: "merged" with its commit, or
+"refused" with why). A topic auto-finish.py closed after an automatic merge has no worktree any more:
+runstate reads <main>/.hook-only/archive/<topic>/ instead (also while --wait is polling). runNumbers() is used
+by cost-history.py.
 """
 import glob
 import json
@@ -40,6 +44,13 @@ import subprocess
 import sys
 import time
 from datetime import datetime
+
+HOME_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+sys.path.insert(0, os.path.join(HOME_ROOT, "hooks", "lib"))  # homepath
+import homepath  # noqa: E402,F401  (config/ and the hooks/ role directories on sys.path)
+import homeconfig  # noqa: E402
+import runstate  # noqa: E402
+import wt_topics  # noqa: E402
 
 NEXT = {
 	"NO RESULT": "Tell the user the exit code (90: run `claude auth login` in an outside terminal), then `wt resume <topic>`.",
@@ -51,15 +62,6 @@ NEXT = {
 	"NO STATUS LINE": "Treat as blocked: relay the full result; log the missing line under the plan's ## Friction.",
 }
 
-
-
-def flowLocal(worktree):
-	"""The topic's recorded flow mode (worker-control.py writes .hook-only/flow-mode at launch), else the env."""
-	try:
-		with open(os.path.join(worktree, ".hook-only", "flow-mode"), encoding="utf-8") as f:
-			return f.read().strip() == "local"
-	except OSError:
-		return os.environ.get("FLOW_INTEGRATION") == "local"
 
 def git(cwd, *args):
 	result = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True)
@@ -90,16 +92,7 @@ def mainDirOf():
 
 
 def worktreeOf(topic):
-	return os.path.join(os.path.dirname(mainDirOf()), "worktrees", topic)
-
-
-def runsDirOf(topic):
-	"""(runs dir, archived): the worktree's, or the archive's once auto-finish.py removed the worktree."""
-	live = os.path.join(worktreeOf(topic), ".hook-only", "runs")
-	archived = os.path.join(mainDirOf(), ".hook-only", "archive", topic, ".hook-only", "runs")
-	if not os.path.isdir(live) and os.path.isdir(archived):
-		return archived, True
-	return live, False
+	return str(wt_topics.worktreeOf(mainDirOf(), topic))
 
 
 def runNumbers(runsDir):
@@ -193,106 +186,135 @@ def costCells(r):
 		"actMin": fmt(r["minutes"], 1), "note": note}
 
 
+WAIT_AGAIN = "`python3 ~/.claude/skills/repo-plan/run-result.py {topic} {run} --wait`"
+AUTOMATIC = {
+	"fix": "Automatic fix run: run {run} started by the hook (estimate {minutes} min, ${usd}): the real data showed "
+	"the branch wrong, so the worker handles the findings as review findings; its STATUS: done goes through the "
+	"checks again. Tell the user in one line and wait: {wait}.",
+	"merge": "Automatic merge run: run {run} started by the hook (estimate {minutes} min, ${usd}): the branch lacked "
+	"the latest main, so the worker merges main into it and resolves any conflict (merge.md); its STATUS: done goes "
+	"to auto-merge again. Tell the user in one line and wait: {wait}.",
+	"resume": "Automatic resume: run {run} started by the hook (estimate {minutes} min, ${usd}); the run stopped only "
+	"because the planned dispatch didn't fit. Tell the user in one line and wait: {wait}.",
+}
+NOT_ENDED = (
+	"Next: run {run} is {phase}, not ended: tell the user the status line above and its TODO; nothing here "
+	"decides on it. A wait that returned on an orphan or unknown phase: the run died or its record can't be read "
+	"(evidence above); `wt status {topic}` checks the process outside the sandbox, and `wt resume {topic}` checks it "
+	"too, closes a run whose process is gone (never merged) and resumes, and refuses while it runs or can't be checked."
+)
+
+
+def kindOf(status):
+	"""The verdict NEXT is keyed on, from the status's claude part and exit reason (judge()'s order)."""
+	claude = status.get("claude") or {}
+	if not claude:
+		return "NO RESULT"
+	if (status.get("outcome") or {}).get("reason") == "stopped" or claude.get("outcome") == "stopped":
+		return "STOPPED"
+	if claude.get("outcome") == "error":
+		return "FAILED"
+	if claude.get("status"):
+		return f"STATUS: {claude['status'].lower()}"
+	return "NO STATUS LINE"
+
+
+def costLines(runsDir, run):
+	"""The run's numbers and its Cost row (judge(): today's files, as cost-history.py import reads them)."""
+	r = judge(runsDir, run) if runsDir else None
+	if r is None:
+		return []
+	c = costCells(r)
+	return [
+		f"start {r['start']} · end {r['end']} · exit {r['code']} · {r['minutes']:.1f} min"
+		+ (f" · ${r['usd']:.2f} this run" if r["usd"] is not None else "") + f" · {r['turns']} turns"
+		+ (f"   ({r['note']}: log it under ## Friction)" if r["note"] else ""),
+		f"Cost row (recorded by the hooks; cost-history.py import writes it): | worker (run {run}) | {run} | "
+		f"{c['estUsd']} | {c['actUsd']} | {c['estMin']} | {c['actMin']} | {c['note']} |",
+	]
+
+
+def nextLines(status, found, topic):
+	"""What the planning session does next: the automatic run that started, or NEXT for the verdict; then the
+	automatic merge's outcome."""
+	lines = []
+	auto, merged = found.get("next") or {}, found.get("merge") or {}
+	checked, judged = found.get("verify") or {}, found.get("verifier") or {}
+	if checked and checked.get("passed") is not True:
+		lines.append("Real-data checks FAILED (verify.py, detail above): in PR mode tell the user and resume the worker "
+			"with the failures (they go into the plan); in local mode a fix run starts by itself (below).")
+	if judged.get("verdict") == "failed":
+		lines.append("Verifier: FAILED (detail above). In local mode a fix run starts by itself (below).")
+	elif judged and judged.get("verdict") != "passed":
+		lines.append(f"Verifier: could not judge ({judged.get('why') or judged.get('error')}). Tell the user: the "
+			"verifier failed, not the branch.")
+	if auto.get("decision") in AUTOMATIC:
+		wait = WAIT_AGAIN.format(topic=topic, run=auto.get("run"))
+		lines.append(AUTOMATIC[auto["decision"]].format(wait=wait, **{k: auto.get(k) for k in ("run", "minutes", "usd")}))
+	else:
+		if auto:
+			lines.append(f"No automatic resume: {auto.get('reason')}")
+		lines.append("Next: " + NEXT.get(kindOf(status), NEXT["NO STATUS LINE"]).replace("<topic>", topic))
+	if merged.get("decision") == "merged":
+		commit = str(merged.get("commit"))[:10]
+		lines.append(
+			f"Automatic merge: merged into {merged.get('into')} as {commit} (local mode; undo with `git revert -m 1 "
+			f"{commit}`" + ("; docs only, merged without a code review" if merged.get("review") == "docs-only" else "")
+			+ "). Tell the user in one line. auto-finish.py then archives the records, imports the cost, appends the "
+			f"friction to plans/friction.md and removes the worktree (<main>/.hook-only/archive/{topic}.finish.json "
+			"says how it went); the friction waits for the next planning session, no /finish-worktree needed."
+		)
+	elif merged.get("decision") and auto.get("decision") in ("merge", "fix"):
+		lines.append(f"Automatic merge waits for the {auto.get('decision')} run: {merged.get('reason')}.")
+	elif merged.get("decision"):
+		lines.append(
+			f"Automatic merge refused: {merged.get('reason')}. Tell the user why; they review and merge by hand"
+			+ (", or start the merge run (estimate --merge, wt resume): the automatic one didn't start."
+				if merged.get("merge_run") else ".")
+		)
+	return lines
+
+
+def readStatus(mainDir, topic, run, wait):
+	"""The status of run (None: the current one), waiting as --wait says (module doc)."""
+	status = runstate.status(mainDir, topic, run=run)
+	run = status["run"]  # the wait stays on this run; an automatic next run is a wait of its own
+	while wait and status["phase"] not in runstate.WAIT_ENDS:
+		time.sleep(runstate.settings()["status_wait_poll_seconds"])
+		status = runstate.status(mainDir, topic, run=run)
+	return status
+
+
 def main():
 	args = [a for a in sys.argv[1:] if a != "--wait"]
 	if not args or len(args) > 2:
 		sys.exit("usage: python3 run-result.py <topic> [<run>] [--wait]")
 	topic = args[0]
 	worktree = worktreeOf(topic)
-	runsDir, archived = runsDirOf(topic)
-	runs = runNumbers(runsDir)
-	if not runs:
-		sys.exit(f"FAIL: no start-<n> in {runsDir}")
-	run = int(args[1]) if len(args) == 2 else runs[-1]
-
-	def finished():
-		path = os.path.join(runsDirOf(topic)[0], f"exit-{run}")
-		return os.path.isfile(path) and os.path.getsize(path)
-
-	while "--wait" in sys.argv and not finished():
-		time.sleep(30)
-	runsDir, archived = runsDirOf(topic)
-
-	r = judge(runsDir, run)
-	if r is None:
-		print(f"{topic} run {run}: still running (no exit-{run}); started {readText(os.path.join(runsDir, f'start-{run}'))}")
+	status = readStatus(mainDirOf(), topic, int(args[1]) if len(args) == 2 else None, "--wait" in sys.argv)
+	found = runstate.detail(status, text=False)
+	print(runstate.agent(status, found))
+	print()
+	if status["phase"] == "none":
+		print(f"Next: {topic} has no run yet (no run record and no run files, in its worktree or its archive).")
 		return
-	c = costCells(r)
-	print(f"{topic} run {run}{' (' + r['mode'] + ')' if r['mode'] in ('merge', 'fix') else ''}: {r['verdict']}"
-		+ (f"   ({r['note']}: log it under ## Friction)" if r["note"] else ""))
-	print(f"start {r['start']} · end {r['end']} · exit {r['code']} · {r['minutes']:.1f} min"
-		+ (f" · ${r['usd']:.2f} this run" if r["usd"] is not None else "") + f" · {r['turns']} turns")
-	print(f"Cost row (recorded by the hooks; cost-history.py import writes it): | worker (run {run}) | {run} | {c['estUsd']} | {c['actUsd']} | {c['estMin']} | {c['actMin']} | {c['note']} |")
-	checked = loadJson(os.path.join(runsDir, f"verify-{run}.json"))
-	if checked:
-		failed = [c for c in checked.get("checks") or [] if not c.get("ok")]
-		if checked.get("passed"):
-			print(f"Real-data checks: passed ({len(checked.get('checks') or [])} checks, verify-{run}.json).")
-		else:
-			print("Real-data checks FAILED (verify.py): " + (checked.get("error") or "; ".join(
-				f"{c['name']}: {c['why']}" for c in failed)) + ". In PR mode tell the user and resume the worker with "
-				"the failures (they go into the plan); in local mode a fix run starts by itself (below).")
-	judged = loadJson(os.path.join(runsDir, f"verifier-{run}.json"))
-	if judged:
-		verdict = judged.get("verdict")
-		if verdict == "passed":
-			print(f"Verifier: passed (verifier-{run}.json).")
-		elif verdict == "failed":
-			print(f"Verifier: FAILED (verifier-{run}.json): " + "; ".join(l.strip() for l in str(judged.get("report") or "")
-				.splitlines() if re.match(r"^\s*V\d+\s+fail", l))[:500] + ". In local mode a fix run starts by itself (below).")
-		else:
-			print(f"Verifier: could not judge ({judged.get('why')}). Tell the user: the verifier failed, not the branch.")
-	auto = loadJson(os.path.join(runsDir, f"auto-{run}.json"))
-	if auto and auto.get("decision") == "fix":
-		nextRun = auto.get("next_run")
-		print(f"Automatic fix run: run {nextRun} started by the hook (estimate {auto.get('minutes')} min, "
-			f"${auto.get('usd')}): the real data showed the branch wrong, so the worker handles the findings as review "
-			f"findings; its STATUS: done goes through the checks again. Tell the user in one line and wait: "
-			f"`python3 ~/.claude/skills/repo-plan/run-result.py {topic} {nextRun} --wait`.")
-	elif auto and auto.get("decision") == "merge":
-		nextRun = auto.get("next_run")
-		print(f"Automatic merge run: run {nextRun} started by the hook (estimate {auto.get('minutes')} min, "
-			f"${auto.get('usd')}): the branch lacked the latest main, so the worker merges main into it and "
-			f"resolves any conflict (merge.md); its STATUS: done goes to auto-merge again. Tell the user in one "
-			f"line and wait: `python3 ~/.claude/skills/repo-plan/run-result.py {topic} {nextRun} --wait`.")
-	elif auto and auto.get("decision") == "resume":
-		nextRun = auto.get("next_run")
-		print(f"Automatic resume: run {nextRun} started by the hook (estimate {auto.get('minutes')} min, "
-			f"${auto.get('usd')}); the run stopped only because the planned dispatch didn't fit. Tell the user "
-			f"in one line and wait: `python3 ~/.claude/skills/repo-plan/run-result.py {topic} {nextRun} --wait`.")
-	else:
-		if auto:
-			print(f"No automatic resume: {auto.get('reason')}")
-		print("Next: " + NEXT[r["kind"]].replace("<topic>", topic))
-	merged = loadJson(os.path.join(runsDir, f"merge-{run}.json"))
-	if merged and merged.get("decision") == "merged":
-		print(f"Automatic merge: merged into {merged.get('into')} as {str(merged.get('commit'))[:10]} (local mode; "
-			f"undo with `git revert -m 1 {str(merged.get('commit'))[:10]}`"
-			+ ("; docs only, merged without a code review" if merged.get("review") == "docs-only" else "")
-			+ f"). Tell the user in one line. auto-finish.py "
-			f"then archives the records, imports the cost, appends the friction to plans/friction.md and removes the "
-			f"worktree (<main>/.hook-only/archive/{topic}.finish.json says how it went); the friction waits for the "
-			f"next planning session, no /finish-worktree needed.")
-	elif merged and auto and auto.get("decision") in ("merge", "fix"):
-		print(f"Automatic merge waits for the {auto.get('decision')} run: {merged.get('reason')}.")
-	elif merged:
-		print(f"Automatic merge refused: {merged.get('reason')}. Tell the user why; they review and merge by hand"
-			+ (", or start the merge run (estimate --merge, wt resume): the automatic one didn't start." if merged.get("merge_run") else "."))
-	if r["kind"] == "STATUS: done" and archived:
+	if status["phase"] != "ended":
+		print(NOT_ENDED.format(topic=topic, run=status["run"], phase=status["phase"]))
+		return
+	for line in costLines(status["runs_dir"], status["run"]) + nextLines(status, found, topic):
+		print(line)
+	kind = kindOf(status)
+	if kind == "STATUS: done" and status["archived"]:
 		print("Changes to .claude / .mcp.json: none merged (auto-merge holds .claude/ for a person); the worktree was "
 			f"archived and removed after the automatic merge (<main>/.hook-only/archive/{topic}/).")
-	elif r["kind"] == "STATUS: done":
-		base = ""
-		refs = ("main", "master") if flowLocal(worktree) else ("origin/HEAD", "origin/main", "origin/master")
-		for ref in refs:
-			base = git(worktree, "merge-base", "HEAD", ref)
-			if base:
-				break
-		diff = git(worktree, "diff", "--stat", f"{base}..HEAD", "--", ".claude", ".mcp.json") if base else "(no origin base)"
+	elif kind == "STATUS: done":
+		base, why = homeconfig.integrationBase(worktree)
+		diff = git(worktree, "diff", "--stat", f"{base}..HEAD", "--", ".claude", ".mcp.json") if base else f"(unknown: {why})"
 		print("Changes to .claude / .mcp.json: " + (diff or "none"))
-	if r["text"]:
+	text = (runstate.detail(status).get("result") or {}).get("text")
+	if text:
 		print("--- result ---")
-		print(r["text"])
+		print(text)
 
 
 if __name__ == "__main__":

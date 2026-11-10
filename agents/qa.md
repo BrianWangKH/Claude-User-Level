@@ -8,17 +8,6 @@ tools: Read, Grep, Glob, Bash, Write, Edit
 skills:
   - agent-common
   - qa-notes
-hooks:
-  PreToolUse:
-    - matcher: "SubagentHandback"
-      hooks:
-        - type: command
-          command: "python3 ~/.claude/hooks/report-check.py"
-  PostToolUse:
-    - matcher: "SubagentHandback"
-      hooks:
-        - type: command
-          command: "python3 ~/.claude/hooks/flow-next.py report"
 ---
 
 You are the QA engineer. Follow the global and project `CLAUDE.md`, `agent-common`, and the project notes preloaded above (test style, framework pitfalls, how to run tests).

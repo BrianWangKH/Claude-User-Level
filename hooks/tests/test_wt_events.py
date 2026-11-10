@@ -1,4 +1,4 @@
-"""wt_events.py: what happened, for the person's next prompt and the pane's toasts (2026-11-01).
+"""wt_events.py: what happened, for the person's next prompt and the pane's toasts.
 
 Run: uv run --offline --no-project --with pytest python -m pytest ~/.claude/hooks/tests/test_wt_events.py
 """
@@ -8,7 +8,8 @@ import subprocess
 import sys
 
 HOOKS = os.environ.get("QG_HOOKS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, HOOKS)
+sys.path.insert(0, os.path.join(HOOKS, "lib"))
+import homepath  # noqa: E402,F401  (the tree under test: config/ and the hooks/ role directories)
 
 import wt_events  # noqa: E402
 
@@ -20,7 +21,7 @@ def mainCheckout(tmp_path):
 
 
 def hook(main, cwd=None):
-	result = subprocess.run([sys.executable, os.path.join(HOOKS, "wt_events.py")], input=json.dumps(
+	result = subprocess.run([sys.executable, os.path.join(HOOKS, "worker", "wt_events.py")], input=json.dumps(
 		{"hook_event_name": "UserPromptSubmit", "prompt": "hi", "cwd": str(cwd or main), "session_id": "s"}),
 		capture_output=True, text=True)
 	assert result.returncode == 0 and "error" not in result.stderr, result.stderr
@@ -65,7 +66,7 @@ def test_a_half_written_line_waits_and_a_replaced_log_starts_over(tmp_path):
 
 def test_emit_from_the_command_line(tmp_path):
 	main = mainCheckout(tmp_path)
-	subprocess.run([sys.executable, os.path.join(HOOKS, "wt_events.py"), "emit", str(main), "run-ended", "alpha-t",
+	subprocess.run([sys.executable, os.path.join(HOOKS, "worker", "wt_events.py"), "emit", str(main), "run-ended", "alpha-t",
 		"run 1: STATUS: done"], check=True)
 	assert wt_events.since(main, 0)[0][0]["text"] == "run 1: STATUS: done"
 
@@ -76,3 +77,19 @@ def test_needs_attention():
 	assert wt_events.needsAttention({"kind": "run-ended", "text": "run 1: exit 1"})
 	assert not wt_events.needsAttention({"kind": "run-ended", "text": "run 1: STATUS: done"})
 	assert not wt_events.needsAttention({"kind": "merged"})
+
+
+def test_a_failed_step_or_wrap_up_needs_the_person():
+	assert wt_events.needsAttention({"kind": "step-failed", "text": "run 1: verify failed"})
+	assert wt_events.needsAttention({"kind": "wrapup-failed", "text": "run 1: OSError"})
+
+
+def test_the_pane_marks_the_same_kinds_as_needing_the_person():
+	"""The wt-pane mod's toast list (control.ts ATTENTION) is a hand-kept copy of wt_events.ATTENTION."""
+	import re
+
+	control = os.path.join(os.path.dirname(HOOKS), "mods", "wt-pane", "hooks", "control.ts")
+	with open(control, encoding="utf-8") as f:
+		found = re.search(r"^const ATTENTION = new Set\(\[([^\]]*)\]\)", f.read(), re.M)
+	assert found, "control.ts has no ATTENTION set"
+	assert set(re.findall(r"'([^']+)'", found.group(1))) == wt_events.ATTENTION

@@ -1,0 +1,2 @@
+- Python (managed by uv, `pyproject.toml`): install with `uv sync`; tests `uv run pytest`
+- The quality gates use the home's Python profile (`~/.claude/config/home.json` `toolchains`); `.claude/quality-gates.json` is copied from `~/.claude/templates/quality-gates.json`

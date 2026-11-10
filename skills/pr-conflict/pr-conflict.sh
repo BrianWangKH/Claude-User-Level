@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Check whether a topic's branch conflicts with origin's default branch, without touching any
+# Check whether a topic's branch conflicts with its integration branch (base-ref.sh of the topic's
+# worktree: origin's default branch in PR mode, the local main in local mode), without touching any
 # working tree (git merge-tree). Run from the main checkout after a fresh fetch (done by the
 # fetch-origin hook when skill pr-conflict is invoked). In a worktree, pass --local to skip the
-# fetch check and use whatever origin/<default> was fetched last (feature-flow wrap-up).
+# fetch check and use whatever was fetched last (feature-flow wrap-up).
 # Usage: bash pr-conflict.sh <topic | type/scope/topic> [--local]
 # Exit: 0 when the check ran (first word OK / MERGED / CONFLICT, files listed on CONFLICT),
 # 1 error, 2 usage error. A conflict is a normal result, so it doesn't show as a failed command.
@@ -48,13 +49,9 @@ while IFS= read -r line; do
 done < <(git worktree list --porcelain);
 [ -n "${path}" ] || fail "no worktree for ${target}";
 
-base=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null);
-if [ -z "${base}" ]; then
-	for candidate in origin/master origin/main; do
-		git rev-parse --verify --quiet "${candidate}" >/dev/null && base=${candidate} && break;
-	done
-fi
-[ -n "${base}" ] || fail "cannot find origin's default branch";
+# The topic's integration branch (base-ref.sh of its worktree, in the topic's flow mode).
+here=$(dirname "$(readlink -f "$0")");
+base=$(bash "${here}/../feature-flow/base-ref.sh" "${path}") || fail "cannot find the integration branch (base-ref.sh)";
 
 if git merge-base --is-ancestor "${branch}" "${base}"; then
 	echo "MERGED: ${branch} is contained in ${base} (merged, or no commits yet); nothing to resolve.";

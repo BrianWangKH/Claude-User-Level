@@ -5,7 +5,7 @@ when_to_use: From skill repo-plan, once scope and decisions are settled with the
 argument-hint: "<type>/<scope>/<topic>"
 ---
 
-A hook fetches origin when this skill is invoked; the script refuses if that fetch failed or is stale. In local mode (`FLOW_INTEGRATION=local`) there is no fetch: the branch starts from the local main.
+A hook fetches origin when this skill is invoked; the script refuses if that fetch failed or is stale. In local mode (`python3 ~/.claude/config/homeconfig.py flow-mode` prints `local`) there is no fetch: the branch starts from the local main.
 
 1. Run, with the branch from the arguments:
    ```bash

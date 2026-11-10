@@ -1,0 +1,6 @@
+{
+  "_comment": "Protected paths (~/.claude/templates/guard-paths.json). tests: test code, developer must not touch. qaConfig: test-runner config, same rule. shared: either may change, reminder only.",
+  "tests": ["test_*.py", "**/test_*.py"],
+  "qaConfig": [],
+  "shared": ["pyproject.toml", "uv.lock"]
+}

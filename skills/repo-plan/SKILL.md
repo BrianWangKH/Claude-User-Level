@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 # Repo plan
 
-You are the **planning session** (global `CLAUDE.md`, 「角色」). You discuss, research and write plans; worktree sessions do the work.
+You are the **planning session** (global `CLAUDE.md`, "Roles"). You discuss, research and write plans; worktree sessions do the work.
 
 ## Start (every time)
 
@@ -23,14 +23,14 @@ Repo check (run when this skill loaded):
 
 ## `plans/repo-plan.md`
 
-The planning record, kept in the main checkout only (gitignored). It keeps the discussion out of the context and carries it across sessions.
+The planning record, kept in the main checkout only (gitignored). It keeps the discussion out of the context and carries it across sessions. A new file uses the English section names below; an existing file keeps its older Chinese names (given in brackets), which mean the same sections.
 
 | Section | Holds | Leaves when |
 |---|---|---|
-| `## 討論中` | open questions, research notes with source links | settled → next section, or → 不採用 |
-| `## 已定案、待開 branch` | settled items waiting for a worktree | its worktree plan is written and handed off: delete it here |
-| `## 不採用` | options dropped, with the reason | never (stops the same option coming back) |
-| `## 未來` | later, not now | work starts → 討論中 |
+| `## Under discussion` (older: `## 討論中`) | open questions, research notes with source links | settled → next section, or → Not adopted |
+| `## Settled, waiting for a branch` (older: `## 已定案、待開 branch`) | settled items waiting for a worktree | its worktree plan is written and handed off: delete it here |
+| `## Not adopted` (older: `## 不採用`) | options dropped, with the reason | never (stops the same option coming back) |
+| `## Future` (older: `## 未來`) | later, not now | work starts → Under discussion |
 
 Write to it as the discussion goes, not at the end.
 
@@ -51,7 +51,7 @@ Principle: test decisions and numbers, not pixels. The project `CLAUDE.md` gives
 
 ## Plan rules
 
-- Before any branch starts, settle with the user its scope, what is out of scope, and every 「待討論」 item (only goal or scope choices are 「待討論」; everything else follows 「Decide, don't ask」). 「待討論」 parts are never implemented or tested until the user answers.
+- Before any branch starts, settle with the user its scope, what is out of scope, and every `to be discussed` item (older plans: 「待討論」) (only goal or scope choices are `to be discussed`; everything else follows "Decide, don't ask"). `to be discussed` parts are never implemented or tested until the user answers.
 - Plans are `plans/<topic>.md` and test plans `plans/tests/<topic>.md`; `plans/` is gitignored. Long-term decisions go into the project docs (DESIGN, TODO) and the PR description.
 - Parallel topics must not overlap in scope; a topic that depends on unmerged work waits until it is merged.
 - In-progress work is always rebuilt from `git worktree list` and each worktree's plan, never from a separate list.
@@ -79,7 +79,7 @@ Common splits that need no question: how many items (records, entities, inputs) 
 
 Also decide yourself: choices with a standard answer, names, formats and internal structure. A choice that changes the product's goal or scope always goes to the user.
 
-**Record every decision you make yourself**, sub-decisions included, as you go: a row in the topic's `## Decisions` table (in `plans/repo-plan.md` `討論中` until the plan is written). Columns: 事件 (the situation) | 選擇 (what was chosen, and what was split off to TODO) | 理由 (why, including why the chosen stage alone is risk-free). When the topic is settled, show the user the whole table at once, in Traditional Chinese, before hand-off.
+**Record every decision you make yourself**, sub-decisions included, as you go: a row in the topic's `## Decisions` table (in `plans/repo-plan.md` `Under discussion` until the plan is written). Columns: Event (the situation) | Choice (what was chosen, and what was split off to TODO) | Reason (why, including why the chosen stage alone is risk-free); older plans name them 事件 | 選擇 | 理由. When the topic is settled, show the user the whole table at once, in the user's preferred language, before hand-off.
 
 ## Modes
 
@@ -100,25 +100,25 @@ Each `MISSING` item from repo-check becomes part of one docs topic (e.g. `featur
 
 ### Discuss (design / TODO)
 
-- The user is present, so research is welcome: look up official docs and existing approaches on the web for feasibility, and note the source of each finding in `討論中`.
+- The user is present, so research is welcome: look up official docs and existing approaches on the web for feasibility, and note the source of each finding in `Under discussion`.
 - Narrow to the options worth trying. Then pick one:
   - settled without testing → a **docs** branch: the plan names the sections of DESIGN / TODO to change and the new text
   - needs evidence → an **investigation** branch (see Classes): the plan lists the 2–3 candidate options, how to test each (experiment, measurement), the **decision criteria** (what decides between them), and a budget. The worktree session runs the experiments, reports a comparison table, the user picks, and only the decision is written into DESIGN
-  - not settled → stays in `討論中`; nothing is written to repo docs
+  - not settled → stays in `Under discussion`; nothing is written to repo docs
 - A long-term decision always ends up in a repo doc through a branch; `plans/repo-plan.md` is only the working record.
 
 ### Plan a feature
 
 1. Propose next topics that aren't in progress, don't overlap an active scope, and don't depend on unmerged work.
-2. Discuss until scope, out-of-scope and every 「待討論」 item are settled. Decide the class (see Classes). Settle each input's bounds and which data each state depends on; every value and list comes from config. When a rule fixes what an output holds (a report, a file, a table, an API response), the plan names its fields with their types and units, so the interface is the plan's decision, not the tests' (a plan that listed only the contents left qa to pick the report's field names). When a rule changes later, update the whole plan.
-3. Never plan on a guess. Every external fact the plan relies on (a data source's field meaning, units, cumulative vs per-period, limits, deadlines, API behaviour, and the API of every test tool and package manager the tests will use, e.g. a UI test harness's element accessors or a dependency-group default) is checked now in the official docs and cited in the plan (link + quote). Never write "the worker checks first": verification is never deferred to a later step. If the docs don't answer it, it is a 「待討論」 item for the user.
+2. Discuss until scope, out-of-scope and every `to be discussed` item are settled. Decide the class (see Classes). Settle each input's bounds and which data each state depends on; every value and list comes from config. When a rule fixes what an output holds (a report, a file, a table, an API response), the plan names its fields with their types and units, so the interface is the plan's decision, not the tests' (a plan that listed only the contents left qa to pick the report's field names). When a rule changes later, update the whole plan.
+3. Never plan on a guess. Every external fact the plan relies on (a data source's field meaning, units, cumulative vs per-period, limits, deadlines, API behaviour, and the API of every test tool and package manager the tests will use, e.g. a UI test harness's element accessors or a dependency-group default) is checked now in the official docs and cited in the plan (link + quote). Never write "the worker checks first": verification is never deferred to a later step. If the docs don't answer it, it is a `to be discussed` item for the user.
 
 ## Hand off and workers
 
-When a topic is settled (scope, out of scope and every 「待討論」 answered): `cat ~/.claude/skills/repo-plan/handoff.md` and follow it (again after a compaction: only this file is re-attached). It covers the branch, the plan per class, the estimate, starting and waiting on the headless worker.
+When a topic is settled (scope, out of scope and every `to be discussed` item answered): `cat ~/.claude/skills/repo-plan/handoff.md` and follow it (again after a compaction: only this file is re-attached). It covers the branch, the plan per class, the estimate, starting and waiting on the headless worker.
 
-- **A worker run ends** (the background `run-result.py --wait` notifies you): do what its `Next:` line says.
-- **「進度」:** `python3 ~/.claude/skills/repo-plan/worker-status.py <topic>`, summarised; never read worker transcripts.
+- **A worker run ends** (the background `run-result.py --wait` notifies you): do what its `Next:` line says. It also returns when the run may have died (`PHASE: orphan`) or its state can't be read (`PHASE: unknown`): tell the user the status line and its `TODO:`; `wt status <topic>` (typed by the user) checks the process outside the sandbox, and `wt resume <topic>` checks it too: it closes a run whose process is gone (never merged) and resumes, and refuses while the process runs or can't be checked.
+- **"progress" (or the same request in the user's language):** `python3 ~/.claude/skills/repo-plan/worker-status.py <topic>`, summarised: its `PHASE:` and the line under the KEY lines say what the run is doing, `progress:` what the worker does now; quote the evidence lines instead of reading run files; never read worker transcripts.
 - Worktrees live at `<main repo>/../worktrees/<topic>` and never push: the user pushes and opens the PR. After the merge, `/finish-worktree <topic>`.
 
 ## Your own friction

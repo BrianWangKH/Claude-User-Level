@@ -6,3 +6,4 @@
 4. **Name the cause only with evidence** that ties it to the symptom. A correlation (e.g. a version changed in between) is labelled a hypothesis and you say what would confirm it.
 5. **Fix by class:** inside the repo and small → a fix topic through `/repo-plan` (or `playbooks/direct.md` if the user asks to fix it here); in `~/.claude` → `playbooks/home-config.md`; can't be fixed now → record it with the evidence.
 6. Report: symptom, evidence, cause (confirmed or hypothesis), fix or where it was recorded.
+7. Retro: `ops/retro.md`.

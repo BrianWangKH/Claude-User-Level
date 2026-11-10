@@ -44,60 +44,16 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Write|Edit|NotebookEdit",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/hooks/block-write-outside-project.py",
+            "command": "python3 ~/.claude/hooks/hook-entry.py pre",
             "onFailure": "block"
-          }
-        ]
-      },
-      {
-        "matcher": "Read|Grep|Glob|Edit|Write|NotebookEdit|Agent|Skill",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/plan-guard.py"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/subagent-budget.py"
           },
           {
             "type": "command",
-            "command": "python3 ~/.claude/hooks/worker-budget.py"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/agent-guard.py"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/worker-progress.py",
+            "command": "python3 ~/.claude/hooks/budget/worker-progress.py",
             "async": true
-          }
-        ]
-      },
-      {
-        "matcher": "Skill",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/fetch-origin.py"
-          }
-        ]
-      },
-      {
-        "matcher": "Agent|Task|SendMessage",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/dispatch-guard.py"
           }
         ]
       },
@@ -107,16 +63,25 @@
           {
             "type": "command",
             "if": "Bash(git *)",
-            "command": "python3 ~/.claude/hooks/crap-gate.py",
-            "timeout": 1800
+            "command": "python3 ~/.claude/hooks/gates/crap-gate.py",
+            "timeout": 2700,
+            "onFailure": "block"
           },
           {
             "type": "command",
-            "command": "python3 ~/.claude/hooks/merge-commit-guard.py"
-          },
+            "if": "Bash(mutate-request *)",
+            "command": "python3 ~/.claude/hooks/gates/mutation.py",
+            "timeout": 2700
+          }
+        ]
+      },
+      {
+        "matcher": "SubagentHandback",
+        "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/hooks/bash-guard.py"
+            "command": "python3 ~/.claude/hooks/hook-entry.py handback",
+            "timeout": 5400
           }
         ]
       }
@@ -126,15 +91,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/hooks/agent-guard.py"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/subagent-budget.py"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/subagent-cost.py"
+            "command": "python3 ~/.claude/hooks/hook-entry.py start"
           }
         ]
       }
@@ -144,15 +101,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/hooks/agent-guard.py"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/subagent-cost.py"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/subagent-budget.py"
+            "command": "python3 ~/.claude/hooks/hook-entry.py stop",
+            "timeout": 5400
           }
         ]
       }
@@ -162,53 +112,28 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/hooks/fetch-origin.py"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/worker-control.py",
-            "timeout": 30
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/agent-guard.py"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/checkpoint-status.py"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/wt_events.py"
+            "command": "python3 ~/.claude/hooks/hook-entry.py prompt"
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|Agent|SendMessage|SubagentHandback",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/hooks/finish-worktree.py"
-          },
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/merge-origin.py"
-          },
-          {
-            "type": "command",
-            "if": "Bash(git commit *)",
-            "command": "python3 ~/.claude/hooks/flow-next.py"
+            "command": "python3 ~/.claude/hooks/hook-entry.py post"
           }
         ]
       },
       {
-        "matcher": "Agent|SendMessage",
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/hooks/flow-next.py"
+            "if": "Bash(git commit *)",
+            "command": "python3 ~/.claude/hooks/worker/flow-next.py"
           }
         ]
       }
@@ -221,24 +146,6 @@
             "command": "python3 ~/.claude/skills/repo-plan/repo-check.py --hook"
           }
         ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/session-mark.py"
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/session-mark.py"
-          }
-        ]
       }
     ],
     "Stop": [
@@ -246,7 +153,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/hooks/worker-stop.py"
+            "command": "python3 ~/.claude/hooks/worker/worker-stop.py"
           }
         ]
       }
@@ -297,7 +204,8 @@
         "~/go",
         "~/.cache/go-build",
         "~/.local/bin",
-        "~/.cache/uv"
+        "~/.cache/uv",
+        "~/.claude/config"
       ]
     }
   },
@@ -314,7 +222,7 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "python3 ~/.claude/hooks/quota-snapshot.py"
+    "command": "python3 ~/.claude/hooks/budget/quota-snapshot.py"
   },
   "feedbackDrafts": "off"
 }

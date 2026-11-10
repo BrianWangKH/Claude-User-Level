@@ -1,0 +1,463 @@
+{
+ "_comment": "Every home default, one section per area (config merge). Tracked: changing a value here changes the default; a new key always ships its default here. config/local.json (untracked) may override any value: same sections, dicts merge, anything else replaces; per value, an invalid override (an unknown section or key, a registry name, an old (renamed) section or key name, another type or range than this file's value, a gate deadline above its ceiling) is ignored: readers get this file's value, homeconfig.py check lists it and exits 1, and the wt-pane mod warns once; broken local JSON means this file for everything. This file itself is strict: broken JSON, a missing or unknown section or a value above its ceiling is a ConfigError. Readers go through config/homeconfig.py (load/get; shell `homeconfig.py get <section> <key>`), never this file. Repo layers (.claude/quality-gates.json limits/languages, .claude/flow.json queue) are merged by their readers on top. Registries (env, path-refs, state-registry, events, rules) live in config/registry/ and are not overridable. Each section's own note is _note_<section>; keys are snake_case except value-as-key tables (agent names in budget.fallback_minutes, model ids in prices.models, language codes in budget.run_state.status_text, tool names in toolchains.tools, language names in toolchains.languages).",
+ "budget": {
+  "_note_fallback_minutes": "Fallback time budgets in minutes, used only when a dispatch brought no `Budget:` line (dispatch_guard.py denies that for these types, so this is a fallback). Only these agent types are budgeted.",
+  "fallback_minutes": {
+   "qa-planner": 15,
+   "spec-reviewer": 8,
+   "qa": 30,
+   "developer": 30,
+   "code-reviewer": 30,
+   "verifier": 30
+  },
+  "_note_worker_dispatch_margin_minutes": "worker_dispatch_margin_minutes: minutes a headless worker keeps for its wrap-up report; dispatch_guard.py denies a dispatch whose `Budget:` minutes plus this margin exceed the run's minutes left.",
+  "worker_dispatch_margin_minutes": 3,
+  "_note_worker_call_budget_min_usd": "worker_call_budget_min_usd: with less than this many USD left of a headless worker run's budget, run-steps.py starts no further claude call (a call that can't do anything): it counts as made with exit code 99 and the run's budget is used up.",
+  "worker_call_budget_min_usd": 0.05,
+  "_note_worker_phases_max": "worker_phases_max: how many PHASE turns run-worker.sh compacts and resumes in one run (test-first has 2: tests-done, dev-done); a loop guard.",
+  "worker_phases_max": 3,
+  "_note_flow_review_rounds_max": "The scripted flow's round caps (flow-next.py): flow_review_rounds_max spec or code review rounds without APPROVE, and decision rounds of open questions, before the flow stops with STATUS: needs-decision (feature-flow's round cap); flow_refused_commits_max refused commits of one kind (tests or implementation) in a row: the commit step that would meet the last one tells the orchestrator to end with STATUS: needs-decision on a denial instead of sending it to a fresh agent: without it a crap-gate refusal of a tests commit loops through fresh qa rounds with no end.",
+  "flow_review_rounds_max": 3,
+  "flow_refused_commits_max": 3,
+  "_note_worker_dispatch_margin_usd": "worker_dispatch_margin_usd: USD a headless worker keeps for its wrap-up; dispatch_guard.py denies a dispatch whose `Budget:` usd plus this margin exceeds the run's remaining budget_usd.",
+  "worker_dispatch_margin_usd": 0.5,
+  "_note_budget_headroom_factor": "budget_headroom_factor: a budget is the estimate of the work (Budget line, plans/worker/<topic>.json); the limits sit this factor above it. subagent_budget.py denies a subagent's tool calls at budget x this; worker-control.py gives a worker run minutes x this (CLAUDE_WORKER_MINUTES, the background wait ceiling) and est_usd x this (--max-budget-usd). The checks that a dispatch fits (dispatch_guard.py) use the estimate itself, so the headroom stays for overruns. Replaces the 80% checkpoint, worker_usd_cap_factor 1.2 and the floors (agent_floor, worker_floor, worker_minutes_floor_ratio): a budget equal to the mean need and stopped at 80% of it stopped 17-18 of 33 replayed rounds; at 1.25 x the mean, 4-5. Hook waits (mutation scan, crap-gate coverage) are reserved by cost-history.py and dispatch_guard.py from the recorded waits, not by a floor.",
+  "budget_headroom_factor": 1.25,
+  "_note_estimate_window_count": "The estimate model (cost-history.py): per agent, per branch class and for merge runs, over the last estimate_window_count rows with a raw estimate, need = fixed + slope x raw, fixed = the estimate_fixed_quantile of the actuals, slope = the largest (actual - fixed) / raw. No floors (they hid that a single factor scaled small jobs below their fixed part). Chosen by replaying the history (skills/repo-plan/estimate-replay.py): subagents 3 of 96 rounds stopped, worker runs 4 of 32; re-run it before changing these.",
+  "estimate_window_count": 10,
+  "estimate_fixed_quantile": 0.5,
+  "_note_worker_auto_resume_max": "Automatic resume (worker-control.py auto): when dispatch_guard.py stops a run only because the planned dispatch doesn't fit its time or USD, it records what a resume needs (the dispatch budget, the gate wait, the wrap-up margins, plus worker_resume_startup_minutes/_usd for re-reading the compacted session and the plan). worker-control.py starts at most worker_auto_resume_max such resumes in a row per topic (a wt launch or wt resume by the user resets the count), only when the record's minutes and USD stay within worker_auto_resume_max_minutes / _usd, and never with an ALERT or HOLD pending. The resume's limits sit budget_headroom_factor above the record, as for any run. The resume gets the larger of that record and what is left of the estimate of the last run the user started, capped at worker_auto_resume_max_minutes / _usd (a record covers only the one dispatch that didn't fit). A later dispatch that fits deletes the record. wt-pane's auto mode sends wt resume itself, which resets the count: with it on, worker_auto_resume_max no longer limits anything.",
+  "worker_auto_resume_max": 1,
+  "worker_auto_resume_max_minutes": 60,
+  "worker_auto_resume_max_usd": 4.0,
+  "_note_worker_auto_merge_max": "Automatic merge run (local mode): when auto-merge.py refuses a STATUS: done run only because the branch lacks the latest main, worker-control.py auto-merge resumes it in merge mode (merge.md) with these minutes and USD as its estimate (limits budget_headroom_factor above), at most worker_auto_merge_max in a row per topic (a wt launch or wt resume by the user resets it). Sized from the one recorded merge run (a TODO.md conflict: $1.05, 5.5 min, estimate $1.20, 15 min) plus room for a developer round on an implementation conflict and the merge review.",
+  "worker_auto_merge_max": 2,
+  "worker_auto_merge_minutes": 40,
+  "worker_auto_merge_usd": 3.0,
+  "_note_worker_auto_fix_max": "Automatic fix run (local mode): when the real data shows a STATUS: done run wrong (verify.py's failed check, or the verifier's fail; auto-merge.py \"fix_run\"), worker-control.py auto-fix resumes the worker with the findings, at most worker_auto_fix_max times in a row (a run the person starts resets the count). worker_auto_fix_usd / _minutes: the raw guess for one fix (a qa fixture, a developer fix, one review), which cost-history.py estimate branch --fix corrects with the history of earlier fix runs (agent \"fix\") and adds one review's and one developer round's gate waits to; it is the starting point of the model, not a limit.",
+  "worker_auto_fix_max": 2,
+  "worker_auto_fix_minutes": 30,
+  "worker_auto_fix_usd": 3.0,
+  "_note_verifier_session_usd": "The verifier (verifier.py), the second real-data layer: its budget is the verify spec's raw estimate (\"verifier\": {\"usd\", \"minutes\"}) through the history model of agent \"verifier\"; subagent_budget.py enforces it like any agent's. verifier_session_usd: added to --max-budget-usd for the headless session around the fork (system prompt, skill, relaying the report). verifier_grace_minutes: added to budget x budget_headroom_factor before verifier.py stops the session, for a command still running when the budget hook stops the agent and for its report; a stop is an error for the person, never a pass.",
+  "verifier_session_usd": 0.5,
+  "verifier_grace_minutes": 10,
+  "_note_verify_check_timeout_seconds": "verify_check_timeout_seconds: how long verify.py lets one real-data check run when its spec (plans/verify/<topic>.json) sets no timeout_seconds; a check that runs out fails.",
+  "verify_check_timeout_seconds": 1500,
+  "worker_resume_startup_minutes": 3,
+  "worker_resume_startup_usd": 0.4,
+  "_note_queue_workers_max": "The topic queue (wt_queue.py, local mode): plans the person queued with `wt queue` start one after another, as many at once as these allow. queue_workers_max: busy topics at once (hooks/lib/runstate.py status busy: a run launching, running or finishing, one whose state can't be read, a suspected orphan, or an automatic resume, merge or fix run decided and not started). queue_max_concurrent_usd: their estimates (est_usd) summed, the next one's included. Generic defaults: a repo may set lower ones in .claude/flow.json {\"queue\": {\"queue_workers_max\", \"queue_max_concurrent_usd\"}} (read from the local main's commit; the effective limit is the smaller of the repo's and this, wt_queue.limits), and its own resource tags in each plans/queue/<topic>.json.",
+  "queue_workers_max": 2,
+  "queue_max_concurrent_usd": 20.0,
+  "_note_queue_max_five_hour_pct": "The subscription's usage limits for the topic queue (wt_queue.py): no new start while the 5-hour or weekly window is at these percentages or above (quota-snapshot.py, the status line, writes ~/.claude/state/quota/usage.json; the status line JSON is the only documented source). A snapshot older than queue_quota_max_age_minutes, or none, is unknown usage: queue_quota_unknown \"wait\" starts nothing until a session refreshes it, \"start\" goes on without it. The person's limits, not a repo's: no override in .claude/flow.json. Runs already going are not stopped.",
+  "queue_max_five_hour_pct": 80,
+  "queue_max_seven_day_pct": 80,
+  "queue_quota_max_age_minutes": 60,
+  "queue_quota_unknown": "wait",
+  "_note_queue_done_linger_minutes": "queue_done_linger_minutes: how long a queued topic that was merged and finished stays in the queue listing (pane, wt queue) before a tick removes it; its plans/queue files go to the archive when it is marked done.",
+  "queue_done_linger_minutes": 10,
+  "_note_auto_finish_wait_seconds": "auto_finish_wait_seconds: how long auto-finish.py, started right after an automatic merge, waits for the run to end (hooks/lib/runstate.py status ended, written with exit-<run>) and its wrapper to be gone before it gives up (finish.json step wait; nothing archived or removed).",
+  "auto_finish_wait_seconds": 1800,
+  "_note_run_state": "Worker run state (hooks/lib/runstate.py, hooks/worker/run-status.py): the run record, heartbeat and orphan limits, the status wait and the status text. Here because it is about worker runs; the person may override the language in config/local.json.",
+  "run_state": {
+   "_note_heartbeat_interval_seconds": "Seconds between two heartbeats of a worker run's wrapper (runs/<run>-heartbeat.json, hooks/lib/runstate.py).",
+   "heartbeat_interval_seconds": 60,
+   "_note_orphan_missed_beats_count": "Missed heartbeats before runstate.status calls a run without an exit a suspected orphan: the limit is heartbeat_interval_seconds x this, counted from the last sign of life (the heartbeat, else the wrapper's start, else the launch). Suspected only shows; nothing acts on it without a pid check outside the sandbox.",
+   "orphan_missed_beats_count": 3,
+   "_note_status_wait_poll_seconds": "run-status.py --wait and auto-finish.py (waiting for the merged run to end), and run-steps.py waiting for a wrap-up step before the next one that still runs elsewhere: seconds between two reads of the status. Not a limit: the wait ends at ended, orphan, unknown or none (run-steps.py: when that step ends, or at its time limit), and orphan detection guarantees it ends.",
+   "status_wait_poll_seconds": 15,
+   "_note_step_attempts_max": "How many times run-steps.py runs one wrap-up step of a run (verify, verifier, merge, next, finish, queue_tick) before it gives up: a step whose runner died while it ran, or that failed, runs again as the next attempt when the wrap-up is run again (run-steps.py wrapup or step), up to this many attempts in all. A step done or skipped never runs again. Proposed default, user to confirm.",
+   "step_attempts_max": 3,
+   "_note_step_running_report_factor": "A wrap-up step running at least this share of its time limit (the limit it started with, step_history.py; its step_limit_default_seconds when it recorded none) is reported as running long in wt status, the pane and run-steps.py reconcile (runstate.longStep). Report only: nothing is stopped or changed.",
+   "step_running_report_factor": 0.5,
+   "_note_step_limit_history_count": "Step time limits from history (hooks/lib/step_history.py, worker self-repair 3c): how many of a step's newest durations (its last attempt that ended done, per run, in this repository's worktrees and archive) the median is taken over.",
+   "step_limit_history_count": 10,
+   "_note_step_limit_min_samples_count": "With fewer durations of a step than this, its limit is step_limit_default_seconds, never the median: one or two quick runs must not make a later normal one look hung.",
+   "step_limit_min_samples_count": 3,
+   "_note_step_limit_factor": "A step's time limit is the median of its recent durations times this. No floor: only the sample count guards a short limit.",
+   "step_limit_factor": 3,
+   "_note_step_limit_default_seconds": "The lenient time limit per wrap-up step (a value-as-key table: step name -> seconds, the unit the run record's limit_seconds keeps) while too few durations exist: two hours for the steps that run the repo's checks or an agent (verify, verifier, merge), an hour for the finish, half an hour for the next run's start and the queue tick. run-steps.py ends a step's program after its limit (failed, retried up to step_attempts_max) except the verifier (it keeps its own timeout; the limit only reports) and the merge (only the event merge-slow, never ended); auto-finish.py gives each sub-action the finish's limit.",
+   "_note_step_kill_grace_seconds": "run-steps.py: seconds between the TERM that ends a wrap-up step's program at its time limit and a KILL of its process group when it still runs.",
+   "step_kill_grace_seconds": 30,
+   "step_limit_default_seconds": {"verify": 7200, "verifier": 7200, "merge": 7200, "next": 1800, "finish": 3600, "queue_tick": 1800},
+   "_note_reconcile_wt_interval_minutes": "The reconciler (run-steps.py reconcile --all, hooks/worker/reconciler.py) started by a wt command (worker-control.py) or the pane's poll (wt_controls.py): at most once per this many minutes per main checkout (state kind reconcile-trigger).",
+   "reconcile_wt_interval_minutes": 5,
+   "_note_reconcile_heartbeat_beats_count": "A worker's heartbeat loop (run-worker.sh) starts the reconciler for the repository's other worktrees once every this many beats (heartbeat_interval_seconds each), detached; its output goes to the run's stderr log only.",
+   "reconcile_heartbeat_beats_count": 5,
+   "_note_ending_idle_max_seconds": "How long a worker's claude call may keep waiting after the run's final turn (first line STATUS, recorded by worker-stop.py; never after a pause or a PHASE turn) before run-steps.py watch ends it and that turn becomes the call's result (hooks/worker/run_ending.py). claude -p waits for pending background subagents, Monitor watches and /loop wakeups before it exits; CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS stays at the run's minutes for the mid-run wait, so this is the bound after the ending. Proposed default, user to confirm.",
+   "ending_idle_max_seconds": 90,
+   "_note_ending_poll_seconds": "run-steps.py watch: seconds between two reads of the run's final-turn record while claude runs. Not a limit.",
+   "ending_poll_seconds": 5,
+   "_note_ending_kill_grace_seconds": "run-steps.py watch: seconds between the TERM that ends a call after its STATUS turn and a KILL when claude still runs.",
+   "ending_kill_grace_seconds": 30,
+   "_note_legacy_wrapup_stale_minutes": "Runs from before the run record (only today's runs/ files, no heartbeat): minutes after the worker's last result file (or after its minute limit, est-<run>.json cap_minutes, while it still runs) before the run reads as a suspected orphan. Covers the final compaction, verify.py, the verifier and auto-merge. Display and --wait only; goes away when no run without a record is left (migration step 7).",
+   "legacy_wrapup_stale_minutes": 90,
+   "_note_status_language": "Language of runstate.human()'s text for people (a key of status_text). Home default en; set your own in config/local.json {\"budget\": {\"run_state\": {\"status_language\": \"zh-TW\"}}}.",
+   "status_language": "en",
+   "_note_status_text": "runstate.human()'s text per language: a value-as-key table (language code -> message id -> template with {placeholders}); every language has the same message ids (tests check). runstate.agent() always uses en.",
+   "status_text": {
+    "en": {
+     "none": "{topic} · no run yet",
+     "launching": "{topic} · run {run} starting (launched {since})",
+     "running": "{topic} · run {run} running (since {since}, {elapsed_minutes}/{cap_minutes} min)",
+     "running_scripted": "{topic} · run {run} running: step {seq}, waiting for {waiting}",
+     "finishing": "{topic} · run {run} wrapping up: {step} (since {since})",
+     "finishing_claude": "{topic} · run {run} wrapping up (the worker ended {since})",
+     "ended_merged": "{topic} · run {run} done, merged ({merge})",
+     "ended_refused": "{topic} · run {run} done, auto-merge refused: {reason}",
+     "ended_after_wrapup": "{topic} · run {run} wrapped up by hand after its wrapper ended; auto-merge never merges such a run by itself ({reason})",
+     "ended_status": "{topic} · run {run} ended with STATUS {status}",
+     "ended_stopped": "{topic} · run {run} stopped (wt stop)",
+     "ended_other": "{topic} · run {run} ended: {reason} (exit {code})",
+     "ended_wrapup_failed": "{topic} · run {run} ended because its wrap-up failed: {error}",
+     "steps_kept": "; kept for later: {steps}",
+     "steps_failed": "; failed wrap-up step: {steps}",
+     "orphan_suspected": "{topic} · run {run} may have died: {why}",
+     "orphan_confirmed": "{topic} · run {run} died and nobody wrapped it up (process gone)",
+     "orphan_wrapup": "{topic} · run {run} finished its work (STATUS done), but its wrapper ended before the wrap-up; kept for later: {steps}",
+     "why_stale": "no sign of life since {since} ({age_minutes} min, limit {threshold_minutes} min)",
+     "why_wrapper_exited": "its wrapper exited at {since} before the wrap-up ended",
+     "why_boot": "the machine restarted after it started",
+     "unknown": "{topic} · run {run} state unreadable: {error}",
+     "held": "; agent-guard {held} pending",
+     "todo_merge": "review it, then approve the merge",
+     "todo_resume": "answer the worker's question, then resume",
+     "todo_orphan_suspected": "wt resume checks its process first: gone, it closes this run (never merged) and resumes; still running or not checkable, it refuses (wt status {topic} shows the check)",
+     "todo_orphan_confirmed": "wt resume closes this run (never merged) and resumes",
+     "todo_orphan_no_resume": "nothing to resume until the planning session writes a new estimate; then wt resume closes this run first",
+     "todo_orphan_wrapup": "type wt wrapup {topic} (or press the button) to finish the wrap-up",
+     "todo_orphan_wrapup_check": "its work is done (STATUS done) and its wrap-up is kept: wt wrapup {topic} (or the button) checks its process first and finishes the wrap-up only if it is gone",
+     "todo_merge_after_wrapup": "expected after a wrap-up by hand: review it, then approve the merge (wt merge {topic} or the button)",
+     "todo_unknown": "have the planning session check {file}",
+     "todo_held": "decide the agent-guard {held} first (guard.log)",
+     "step_long": "; {step} has run {minutes} min (report limit {limit} min; nothing is stopped)"
+    },
+    "zh-TW": {
+     "none": "{topic} · 還沒有 run",
+     "launching": "{topic} · run {run} 啟動中（{since} 送出）",
+     "running": "{topic} · run {run} 執行中（{since} 起，{elapsed_minutes}／{cap_minutes} 分）",
+     "running_scripted": "{topic} · run {run} 執行中：第 {seq} 步，等 {waiting} 回報",
+     "finishing": "{topic} · run {run} 收尾中：{step}（{since} 起）",
+     "finishing_claude": "{topic} · run {run} 收尾中（worker {since} 結束）",
+     "ended_merged": "{topic} · run {run} 完成，已 merge（{merge}）",
+     "ended_refused": "{topic} · run {run} 完成，auto-merge 拒絕：{reason}",
+     "ended_after_wrapup": "{topic} · run {run} 在 wrapper 結束後手動補跑了收尾；這種 run auto-merge 不會自己 merge（{reason}）",
+     "ended_status": "{topic} · run {run} 停下：STATUS {status}",
+     "ended_stopped": "{topic} · run {run} 已停止（wt stop）",
+     "ended_other": "{topic} · run {run} 結束：{reason}（exit {code}）",
+     "ended_wrapup_failed": "{topic} · run {run} 因收尾失敗而結束：{error}",
+     "steps_kept": "；保留待補跑：{steps}",
+     "steps_failed": "；收尾步驟失敗：{steps}",
+     "orphan_suspected": "{topic} · run {run} 可能中斷：{why}",
+     "orphan_confirmed": "{topic} · run {run} 中斷且沒人收尾（程序已不在）",
+     "orphan_wrapup": "{topic} · run {run} 工作已完成（STATUS done），但 wrapper 在收尾前就結束了；保留待補跑：{steps}",
+     "why_stale": "{since} 之後沒有活著的跡象（{age_minutes} 分，門檻 {threshold_minutes} 分）",
+     "why_wrapper_exited": "wrapper 在 {since} 結束，收尾沒跑完",
+     "why_boot": "開始之後機器重開過",
+     "unknown": "{topic} · run {run} 狀態讀不到：{error}",
+     "held": "；agent-guard {held} 待決定",
+     "todo_merge": "看過後核准 merge",
+     "todo_resume": "回應 worker 的問題後續跑",
+     "todo_orphan_suspected": "wt resume 會先確認程序：已不在就關閉這輪（不會 merge）並續跑；還在跑或確認不了就拒絕（wt status {topic} 顯示確認結果）",
+     "todo_orphan_confirmed": "wt resume 會關閉這輪（不會 merge）並續跑",
+     "todo_orphan_no_resume": "要等規劃 session 寫新的估計才能續跑；之後 wt resume 會先關閉這輪",
+     "todo_orphan_wrapup": "輸入 wt wrapup {topic}（或按按鈕）補跑收尾",
+     "todo_orphan_wrapup_check": "工作已完成（STATUS done），收尾保留著：wt wrapup {topic}（或按鈕）會先確認程序已不在，才補跑收尾",
+     "todo_merge_after_wrapup": "手動補跑收尾後本來就會這樣：看過後核准 merge（wt merge {topic} 或按鈕）",
+     "todo_unknown": "請規劃 session 檢查 {file}",
+     "todo_held": "先決定 agent-guard 的 {held}（見 guard.log）",
+     "step_long": "；{step} 已跑 {minutes} 分（回報門檻 {limit} 分；只回報，不會停止）"
+    }
+   }
+  }
+ },
+ "_note_quality": "Defaults for crap-gate.py and mutation.py; a repo overrides them in .claude/quality-gates.json \"limits\" (same key names; an old name is an error naming the new one). ccn_max 10: ruff mccabe and golangci-lint cyclop default 10. crap_max 30: crap4j's initial threshold (artima thread 215899). hook_timeouts: each gate's own deadline, which the gate enforces itself (qg_common.startDeadline: every command it runs gets at most what is left; running out is an explicit failure and a gate-deadline event, never a pass or a caught mutant): mutate_request_seconds the mutate-request registration of mutation.py, commit_gate_seconds the commit registration of crap-gate.py, developer_gate_seconds crap-gate's developer hand-back and stop, review_handback_seconds mutation's hand-back and stop. A deadline may not pass its registration's ceiling, the settings.json timeout kept by hand (registry rules hook_ceilings_seconds; hooks/tools/hook-entries.py --check-settings checks the installed one is at least that): above it, home.json is an error and a local.json value is ignored (home's is used, with a once-warning). markWait records the deadline as the most a hold can last, and subagent_budget.py takes a mark older than it for a hook Claude Code cancelled. mutation_wait_seconds stays below review_handback_seconds so the scan wait gives up before the hook is cancelled.",
+ "quality": {
+  "ccn_max": 10,
+  "crap_max": 30,
+  "marker_new_max": 3,
+  "developer_blocks_max": 3,
+  "reason_max_chars": 9000,
+  "coverage_timeout_seconds": 1500,
+  "mutation_max": 30,
+  "manual_max": 5,
+  "mutation_timeout_factor": 3,
+  "mutation_timeout_min_extra_seconds": 10,
+  "mutation_wait_seconds": 3300,
+  "hook_timeouts": {
+   "mutate_request_seconds": 1800,
+   "review_handback_seconds": 3600,
+   "developer_gate_seconds": 1800,
+   "commit_gate_seconds": 1800
+  },
+  "survivor_max_chars": 6000
+ },
+ "prices": {
+  "_note_models": "USD per million tokens (the _usd_per_mtok fields), Anthropic first-party list prices, read by prices.py. Input/output: claude-api skill model table (cached 2026-10-06). Cache writes: 5-minute 1.25x and 1-hour 2x input; cache reads 0.05x input on Opus/Sonnet 5.5 (https://platform.claude.com/docs/en/build-with-claude/prompt-caching). The skill's table lists Sonnet 5.5 cache reads at $0.20, but a recorded run's Sonnet costUSD ($2.9998: input 138, output 118464, 5m writes 465386, reads 6514551) matches $0.10 exactly, so $0.10 is used. Haiku 5.5 has two price tiers by prompt size (https://platform.claude.com/docs/en/about-claude/pricing, 2026-11-10: input 0.10, 5-minute write 0.125, 1-hour write 0.20, cache read 0.01, output 0.50 up to 100k prompt tokens; 0.50, 0.625, 1.00, 0.05, 2.50 above); prices.py has one price per model, so it is registered at the higher tier on purpose: estimates and recorded costs err high, never low. Re-check against a result file's modelUsage costUSD when prices change. A model missing here is reported as unpriced, never counted as free.",
+  "models": {
+   "claude-opus-5-5": {
+    "input_usd_per_mtok": 4.0,
+    "output_usd_per_mtok": 20.0,
+    "cache_write_5m_usd_per_mtok": 5.0,
+    "cache_write_1h_usd_per_mtok": 8.0,
+    "cache_read_usd_per_mtok": 0.2
+   },
+   "claude-sonnet-5-5": {
+    "input_usd_per_mtok": 2.0,
+    "output_usd_per_mtok": 10.0,
+    "cache_write_5m_usd_per_mtok": 2.5,
+    "cache_write_1h_usd_per_mtok": 4.0,
+    "cache_read_usd_per_mtok": 0.1
+   },
+   "claude-haiku-5-5": {
+    "input_usd_per_mtok": 0.5,
+    "output_usd_per_mtok": 2.5,
+    "cache_write_5m_usd_per_mtok": 0.625,
+    "cache_write_1h_usd_per_mtok": 1.0,
+    "cache_read_usd_per_mtok": 0.05
+   }
+  }
+ },
+ "_note_toolchains": "Per-language toolchain defaults for the quality gates (qg_common.loadConfig). A repo's .claude/quality-gates.json languages.<lang> is laid over the profile of the same name: a key the repo has replaces the profile's key wholesale (lists replace, never concatenate; [] turns a list key off), a key it omits comes from here. A language is enabled when the repo lists it, or, listed or not and with or without the repo file, when a file tracked at the diff base or added or changed by the branch (outside the repo's exclude) has one of its profile's extensions (qg_common.detectLanguages; gate messages say it was enabled automatically); \"languages\": {\"<lang>\": false} in the repo file turns it off. A language without a profile works from the repo's keys alone. Commands name tools as {uv}, {go}, {gofmt}: replaced at load by the absolute path of the program \"tools\" below names, only for tools some command uses (a bare name looked up on the hook's PATH, a ~ or absolute path expanded and checked to be executable; not found fails the load naming the tool, the key and the fix; no install location is guessed), so a machine pins its tool paths in config/local.json, e.g. {\"toolchains\": {\"tools\": {\"uv\": \"~/.local/bin/uv\"}}}. The runtime placeholders {repo}, {root}, {report} stay for the gates to fill, and in coverage only {changed_dirs}: an argv item holding it is repeated once per directory of the language's changed files, relative to cwd (qg_common module doc); any other {name} in a command key (coverage, test, checks, go_bin, env, select.pytest, select.python) is an error naming it. Generic only: nothing here may assume a repo's packages, paths or linters. Repo-only keys (no generic form): cwd (where the project or module lives), env (python: UV_PROJECT_ENVIRONMENT={repo}/.venv is right only when the project sits at the repo root, and it goes together with excluding .venv/ from the scratch copy), checks for python (the linter is the repo's choice), select (pytest-contexts needs pytest-cov 7.1+ and its fallback names the repo's test layout), exclude, protect, auto_merge_hold.",
+ "toolchains": {
+  "_note_tools": "Tool name -> program: a bare name (resolved with shutil.which on the hook's PATH at load, which may differ from a shell's) or an absolute or ~ path. Pin per machine in config/local.json. The resolved path runs inside bwrap: paths outside $HOME are visible through its read-only /, paths under ~ only when gate_sandbox.home_read covers them (~/.local/bin does).",
+  "tools": {
+   "uv": "uv",
+   "go": "go",
+   "gofmt": "gofmt"
+  },
+  "languages": {
+   "_note_python": "uv + pytest + pytest-cov 4.0+ (lcov report added in pytest-cov 4.0.0, changelog: pytest-cov.readthedocs.io/en/latest/changelog.html). coverage: --cov={changed_dirs} measures only the directories of the changed .py files, so no repo lists its packages and the run doesn't trace everything (bare --cov without a coverage config has no source filter). A directory, not the file: pytest-cov's --cov takes a 'Path or package name to measure during execution (multi-allowed)' (pytest-cov.readthedocs.io/en/latest/config.html) and coverage.py reads a source value as 'directories or importable names (packages or modules)' (coverage.readthedocs.io/en/latest/source.html), so --cov=pkg/mod.py is taken as a module name and measures nothing (measured with pytest-cov 7.1.0); a source directory also reports never-executed files at its root (same page), so a changed file no test imports shows as unexecuted instead of missing. A changed file the report still leaves out is a crap-gate finding, never a pass. The whole suite still runs: only what is measured narrows. A repo with its own coverage command (e.g. a --cov=<package> list) keeps it unchanged. --no-sync and -p no:cacheprovider: the gates run in bwrap without network and must not write caches into the checkout. invalid_exit_codes 2-5: docs.pytest.org/en/stable/reference/exit-codes.html (2 interrupted, 3 internal error, 4 usage error incl. a conftest.py that fails to import, 5 no tests collected): the mutant didn't run, so it is neither caught nor survived (1 = tests failed = caught). red_invalid_exit_codes 4, 5 (same page): the branch's first tests commit must fail because the implementation is missing, and a usage error (an unknown option, e.g. --cov from addopts without pytest-cov, or a conftest.py that fails to import) or no tests collected means the tests never ran; exit 2, a test module that fails to import the missing code, stays the expected red. red_invalid_patterns: a first tests commit that fails on SyntaxError/IndentationError fails for the wrong reason. scratch_exclude: pytest's own caches, safe to leave out of the mutation copy anywhere; used only when the repo has no top-level scratch_exclude.",
+   "python": {
+    "extensions": [
+     ".py"
+    ],
+    "coverage": [
+     "{uv}",
+     "run",
+     "--no-sync",
+     "pytest",
+     "-q",
+     "-p",
+     "no:cacheprovider",
+     "--cov={changed_dirs}",
+     "--cov-branch",
+     "--cov-report=lcov:{report}"
+    ],
+    "coverage_format": "lcov",
+    "test": [
+     "{uv}",
+     "run",
+     "--no-sync",
+     "pytest",
+     "-q",
+     "-x",
+     "-p",
+     "no:cacheprovider"
+    ],
+    "invalid_exit_codes": [
+     2,
+     3,
+     4,
+     5
+    ],
+    "red_invalid_exit_codes": [
+     4,
+     5
+    ],
+    "red_invalid_patterns": [
+     "SyntaxError",
+     "IndentationError"
+    ],
+    "scratch_exclude": [
+     "__pycache__",
+     ".pytest_cache"
+    ]
+   },
+   "_note_go": "Standard go toolchain only. go_bin: the go binary qg_complexity runs for Go complexity. coverage: -coverpkg=./... so a package's lines count when another package's tests run them; not narrowed to the changed packages ({changed_dirs} is not used): the coverprofile holds every block of the packages -coverpkg names, run or not, a package without tests too (observed with go1.27.3: an untested package's blocks appear with count 0), so no changed file goes missing, and every test package still has to run since any of them may cover the change, so narrowing would save only instrumentation. test: -failfast for mutants, -count=1 never uses the test cache. invalid_patterns: go test marks a package it couldn't compile or set up with 'FAIL <pkg> [build failed]' / '[setup failed]' and exits 1 like a test failure (not in the cmd/go docs; observed with go1.27.3), so the suffix, not the exit code, tells an invalid mutant. red_invalid_patterns: the compiler's 'syntax error:' prefix (observed, same run). checks: gofmt -l lists unformatted files and exits 0, so it needs empty_output; go vet ships with go.",
+   "go": {
+    "extensions": [
+     ".go"
+    ],
+    "go_bin": "{go}",
+    "coverage": [
+     "{go}",
+     "test",
+     "-count=1",
+     "-coverpkg=./...",
+     "-coverprofile={report}",
+     "./..."
+    ],
+    "coverage_format": "gocover",
+    "test": [
+     "{go}",
+     "test",
+     "-count=1",
+     "-failfast",
+     "./..."
+    ],
+    "invalid_patterns": [
+     "[build failed]",
+     "[setup failed]"
+    ],
+    "red_invalid_patterns": [
+     "syntax error"
+    ],
+    "checks": [
+     {
+      "argv": [
+       "{gofmt}",
+       "-l",
+       "."
+      ],
+      "empty_output": true
+     },
+     [
+      "{go}",
+      "vet",
+      "./..."
+     ]
+    ]
+   }
+  }
+ },
+ "_note_gate_sandbox": "Sandbox for the commands crap-gate.py and mutation.py run (qg_common.runCommand). Hooks run outside Claude Code's sandbox with the user's full access (code.claude.com/docs/en/sandboxing, 'What runs outside the sandbox'), and those commands run code agents wrote. Home only, not overridable from a repo; config/local.json may override it, and an override that loosens hide, hide_inside, protect, home_read, home_write, env_pass or env_set is announced once (homeconfig.loosened, a setting-loosened event in the pane). bwrap: / read-only, the 'hide' paths (other homes, the Windows drives under /mnt, /run/WSL whose interop socket would start Windows programs outside bwrap) and $HOME replaced by empty tmpfs with only the paths below put back, /tmp a fresh tmpfs, no network, a cleared environment. The checkout or scratch copy under test is writable except the 'protect' entries inside it (read-only); the 'hide_inside' entries inside every checkout or copy a command reads or writes are empty and read-only (the hooks' state .hook-only, hook-read-only/ included, and plans/, which the worker's own sandbox can't read either). The home settings' sandbox denyRead must stay covered: apply.sh runs hooks/tools/sandbox-hide-check.py, which fails while an absolute denyRead path (resolved by its text: '.', '..') has no 'hide' path at or above it (or $HOME or /tmp, which the gate replaces, unless home_read or home_write puts it back), a home_read or home_write path below a denied path is not re-opened by a narrower settings allowRead (so a path added here needs its allowRead in settings.json too), or the name after a '**/' or a relative entry (./x) is not covered by 'hide_inside'. home_write mirrors the home settings' sandbox allowWrite (uv and Go caches), so a test can't do more than a sandboxed Bash command already can. home_read also has ~/godot (Godot binaries, for GDScript projects' tests and coverage). Paths are used as written: no surrounding spaces (a test checks). A repo adds its own protected paths with \"protect\" in quality-gates.json (read from the diff base, so a branch can't change them); it can't remove these. Known limit: in a worktree .git is a file pointing into the main checkout's .git under a hidden home, so tests or tools that call git (e.g. setuptools-scm) fail and crap-gate only says 'produced no report'. not_started_exit_codes / not_started_patterns: how a finished command shows its program never started, so runCommand raises NotStarted instead of handing back an exit code a gate could read as a red suite or a caught mutant: 126 (found, not executable) and 127 (not found) are the shell's codes (POSIX Shell Command Language 2.8.2, 'Exit Status for Commands'); bwrap reports a failed exec of the command as 'bwrap: execvp <program>: <error>' with a non-zero exit (format strings 'bwrap: ' and 'execvp %s' in the installed binary), e.g. a program under a hidden home path. A pattern counts only with a non-zero exit.",
+ "gate_sandbox": {
+  "_note_bwrap_path": "The bwrap the gate commands run in (qg_common.bwrapProblem): an absolute path to an executable file, never looked up on PATH (a repo's settings env reaches the hooks and could put a fake bwrap first). Missing or not executable: the gates fail closed. A local.json that changes it is announced (homeconfig.SAFETY).",
+  "bwrap_path": "/usr/bin/bwrap",
+  "hide": [
+   "/home",
+   "/mnt",
+   "/media",
+   "/run/media",
+   "/srv",
+   "/root",
+   "/run/user",
+   "/run/WSL",
+   "/Users",
+   "/Volumes"
+  ],
+  "home_read": [
+   "~/.local/bin",
+   "~/.local/share/uv/python",
+   "~/godot"
+  ],
+  "home_write": [
+   "~/.cache/uv",
+   "~/.cache/go-build",
+   "~/go"
+  ],
+  "hide_inside": [
+   ".hook-only",
+   "plans"
+  ],
+  "protect": [
+   ".git",
+   ".claude"
+  ],
+  "env_pass": [
+   "PATH",
+   "LANG",
+   "LC_ALL",
+   "LC_CTYPE",
+   "TERM",
+   "TZ",
+   "UV_CACHE_DIR",
+   "USER",
+   "LOGNAME"
+  ],
+  "env_set": {
+   "TMPDIR": "/tmp",
+   "UV_OFFLINE": "1",
+   "GOPROXY": "off",
+   "GOTOOLCHAIN": "local"
+  },
+  "probe_timeout_seconds": 10,
+  "not_started_exit_codes": [
+   126,
+   127
+  ],
+  "not_started_patterns": [
+   "bwrap: execvp "
+  ]
+ },
+ "_note_auto_merge_hold": "auto-merge.py (local mode) never merges a branch that changes these paths: a person reviews them. Home defaults, a repo can only add more; config/local.json may override them, and an override that drops a path is announced once (homeconfig.loosened, a setting-loosened event in the pane) (\"auto_merge_hold\" in .claude/quality-gates.json, read from the base commit). guard-paths style: \"dir/\" is a prefix, * and ? are globs, else the exact path or a directory prefix. Why each: .claude/ and .mcp.json hold the hooks, permissions and tools agents run under; CI files run code on push; dependency manifests and lock files pull new code from the internet (supply chain).",
+ "auto_merge_hold": {
+  "paths": [
+   ".claude/",
+   ".mcp.json",
+   ".github/",
+   ".gitlab-ci.yml",
+   ".gitmodules",
+   "**/pyproject.toml",
+   "**/uv.lock",
+   "**/requirements*.txt",
+   "**/setup.py",
+   "**/setup.cfg",
+   "**/go.mod",
+   "**/go.sum",
+   "**/package.json",
+   "**/package-lock.json",
+   "**/pnpm-lock.yaml",
+   "**/yarn.lock",
+   "**/Cargo.toml",
+   "**/Cargo.lock",
+   "**/Dockerfile*",
+   "**/docker-compose*.yml"
+  ]
+ },
+ "_note_hooks": "Values of the shared hook helpers and the hook generator (hooks/lib/hookio.py, hooks/tools/new-artifact.py); moved out of registry/rules.json, which keeps only rules and vocabularies.",
+ "hooks": {
+  "_note_git_timeout_seconds": "hookio (hooks/lib/hookio.py): how long one git query (checkout root, main checkout) may take.",
+  "git_timeout_seconds": 5,
+  "_note_error_chars": "hookio (hooks/lib/hookio.py): how much of an error message goes into the user warning and the event; the same width wt_events.py cuts event text to (a second copy there, not read from here), so both streams read alike.",
+  "error_chars": 300,
+  "_note_hook_command": "new-artifact.py: the settings command of a generated hook ({role}: its hooks/ role directory, --role; {name}: the hook file name without .py).",
+  "hook_command": "python3 ~/.claude/hooks/{role}/{name}.py",
+  "_note_suite_memory_share_factor": "hooks/tools/suite-workers.py: the share of the available memory (MemAvailable) the hook suite's pytest-xdist workers may use together; the rest stays for other sessions.",
+  "suite_memory_share_factor": 0.5,
+  "_note_suite_worker_memory_kb": "hooks/tools/suite-workers.py: the memory one pytest-xdist worker of the hook suite is counted at (measured about 125 MB each at -n 8; counted high).",
+  "suite_worker_memory_kb": 262144,
+  "_note_rehearsal_memory_share_factor": "Capacity of the optional external test harness for config mode TEST (not included in this repository): the share of MemAvailable its groups, run in parallel, may count on (the rest stays for the person's own sessions).",
+  "rehearsal_memory_share_factor": 0.5,
+  "_note_rehearsal_group_memory_kb": "The external test harness's capacity: the memory one of its groups is counted at: a claude -p worker with its hooks, git and the wrap-up (counted high; groups that start no claude are counted the same).",
+  "rehearsal_group_memory_kb": 1048576,
+  "_note_rehearsal_stop_wait_seconds": "The external test harness's stop (on INT, TERM or HUP): how long its groups' workers get to end, half after SIGINT (what wt stop sends first), half after SIGTERM; workers still running then keep config mode TEST and are named.",
+  "rehearsal_stop_wait_seconds": 140,
+  "_note_rehearsal_progress_dir": "The external test harness: where each of its groups' log lines and status (running or finished, PASS/FAIL counts) and the final table are copied, for a Claude session that can't read the Workforests; {uid} is the user id (Claude Code's sandbox temporary directory is /tmp/claude-<uid>). Fresh per harness run (the earlier one renamed with the stamp); read only by people and sessions, never for a verdict.",
+  "rehearsal_progress_dir": "/tmp/claude-{uid}/rehearsal",
+  "_note_suite_process_headroom_count": "hooks/tools/public-check.py (the clean-install suite run) and hooks/tools/home-draft-suite.py (a home draft's full run), through hooks/lib/suite_command.py: ulimit -u is the account's processes and threads at the start plus this many, so the limit follows what already runs instead of starving other sessions.",
+  "suite_process_headroom_count": 400,
+  "_note_suite_virtual_memory_max_kb": "hooks/tools/public-check.py (the clean-install suite run) and hooks/tools/home-draft-suite.py (a home draft's full run), through hooks/lib/suite_command.py: ulimit -v of the suite, per process.",
+  "suite_virtual_memory_max_kb": 4000000,
+  "_note_suite_uv_args": "hooks/tools/public-check.py (the clean-install suite run) and hooks/tools/home-draft-suite.py (a home draft's full run), through hooks/lib/suite_command.py: the arguments after the configured uv (toolchains.tools.uv) that run pytest; the suite's tests directory, -n <this home's worker count> and --max-worker-restart 0 are added after them.",
+  "suite_uv_args": ["run", "--offline", "--no-project", "--with", "pytest", "--with", "pytest-cov==7.1.0", "--with", "pytest-xdist==3.8.0", "python", "-m", "pytest", "-q", "-rs", "-p", "no:cacheprovider"],
+  "_note_home_draft_small_paths": "hooks/tools/home-draft-size.py (the small-change fast path of a home change): an allowlist. A home draft may skip the drafter and verifier agents only when every path it changes matches one of these and none of home_draft_small_excluded_paths; any other path, code and settings included, takes the full flow (a sealed verifier round). A pattern is a home-relative path whose segments may use * ? [ ] (never across a /); a ** segment matches any number of segments, none included. Safety-related (homeconfig.SAFETY, grow): config/local.json may override it, and a list that adds an entry is announced.",
+  "home_draft_small_paths": ["**/*.md"],
+  "_note_home_draft_small_excluded_paths": "hooks/tools/home-draft-size.py: paths home_draft_small_paths would allow that still take the full flow: the procedure and the agents of the home-change flow itself. Same pattern form. Safety-related (homeconfig.SAFETY, shrink): a list that drops an entry is announced.",
+  "home_draft_small_excluded_paths": ["skills/home-draft/**", "agents/home-*.md"],
+  "_note_home_draft_small_changed_lines_max": "hooks/tools/home-draft-size.py: a home draft is small only when its removed plus added lines (orig/ against new/, every listed file together) are at most this many.",
+  "home_draft_small_changed_lines_max": 20,
+  "_note_public_check_report_dir": "hooks/tools/public-check.py: where each run writes its report and the suite log, in a new <stamp> directory, for a Claude session that can't read the home's git directory; {uid} is the user id (Claude Code's sandbox temporary directory is /tmp/claude-<uid>). Only new files are written there, never through a link; read only by people and sessions.",
+  "public_check_report_dir": "/tmp/claude-{uid}/public-check",
+  "_note_public_check_private_terms": "hooks/tools/public-check.py: words that must not appear in the public export (your names and handles, private project and repo names, private data sources), matched case-insensitively as whole words. Empty here on purpose: list them in config/local.json (not tracked, never exported); the check refuses to run while the list is empty.",
+  "public_check_private_terms": [],
+  "_note_public_check_personal_allowed": "hooks/tools/public-check.py: the only places a private term may appear in the public export: attribution fields, by structure, never a whole file. {path, json_key} or {glob, json_key} (glob: ** any directories, * and ? within one path part) names JSON files whose strings under the top-level json_key (the key and everything below it) may hold a private term; the file's other keys and values are still checked, and a named file that isn't JSON or repeats a key is a finding. E-mail addresses and personal paths are checked everywhere. Default: the author of a Claude Code plugin manifest.",
+  "public_check_personal_allowed": [{"glob": "**/.claude-plugin/plugin.json", "json_key": "author"}],
+  "_note_public_check_secret_patterns": "hooks/tools/public-check.py: regular expressions (Python re) of tokens, keys and credentials; any match in the public export is a finding, shown with its name and a masked excerpt only.",
+  "public_check_secret_patterns": [{"name": "private-key", "pattern": "-----BEGIN ([A-Z0-9]+ )*PRIVATE KEY-----"}, {"name": "aws-access-key", "pattern": "\\b(AKIA|ASIA)[0-9A-Z]{16}\\b"}, {"name": "github-token", "pattern": "\\b(gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})"}, {"name": "anthropic-key", "pattern": "\\bsk-ant-[A-Za-z0-9_-]{20,}"}, {"name": "openai-key", "pattern": "\\bsk-(proj-)?[A-Za-z0-9_-]{32,}"}, {"name": "slack-token", "pattern": "\\bxox[abprs]-[A-Za-z0-9-]{10,}"}, {"name": "google-api-key", "pattern": "\\bAIza[0-9A-Za-z_-]{35}\\b"}, {"name": "url-credentials", "pattern": "\\b[a-z][a-z0-9+.-]*://[^/\\s:@'\"]+:[^/\\s@'\"]+@"}, {"name": "assigned-secret", "pattern": "(?i)\\b[\\w-]*(api[_-]?key|secret|token|passw(or)?d|credential)s?[\"']?\\s*[:=]\\s*[\"'][A-Za-z0-9+/=_.-]{20,}[\"']"}],
+  "_note_public_check_test_email_domains": "hooks/tools/public-check.py: the only e-mail domains allowed in the public export, for fake addresses in tests and examples: the names reserved for that by RFC 2606 and RFC 6761 (a domain matches itself and every name under it). Any other address is a finding.",
+  "public_check_test_email_domains": ["example.com", "example.org", "example.net", "example", "test", "invalid", "localhost"],
+  "_note_public_check_non_english_allowed": "hooks/tools/public-check.py: where the public export may hold non-English text: {path} allows the whole file, {path, json_key} only the strings under an object key of that name in that JSON file. Anything else with a non-ASCII letter or CJK punctuation is a finding.",
+  "public_check_non_english_allowed": [{"path": "README.zh-TW.md"}, {"path": "config/home.json", "json_key": "zh-TW"}],
+  "_note_public_check_not_included_marker": "hooks/tools/public-check.py: a reference in the export to a file the export leaves out is accepted only on a line holding this text (case-insensitive), the note that the file is not part of the public version.",
+  "public_check_not_included_marker": "not included",
+  "_note_public_check_exclude_file": "hooks/tools/public-check.py: the exclude list, a home-relative file read from the checked commit: one path per line (a trailing / for a directory) that the export leaves out on top of export-ignore. TEMPORARY: it names the files that exist only for changing this home itself, which share one tree with the core today; the proper fix moves them into a private layer the core never names. Keep it under a directory export-ignore leaves out, so the list itself is never published. A missing list means the check can't run.",
+  "public_check_exclude_file": "docs/public-export/exclude.txt",
+  "_note_public_check_reference_allow_file": "hooks/tools/public-check.py: the allow list, a home-relative file read from the checked commit: lines `<exported file> <exclude entry>`, each the decision that this exported file may still name that excluded path. Any other reference to an excluded path is a finding, and so is a line no reference uses.",
+  "public_check_reference_allow_file": "docs/public-export/allow-references.txt",
+  "_note_public_check_language_allow_file": "hooks/tools/public-check.py: the language allow list, a home-relative file read from the checked commit: lines `<exported file> <non-English run>`, each the decision that this file may keep that run of non-English characters (an older name a file or program still accepts beside its English one). A line whose every non-English run is listed for its file passes; a line no text uses is a finding.",
+  "public_check_language_allow_file": "docs/public-export/allow-language.txt",
+  "_note_public_check_publish_clear_args": "hooks/tools/public-check.py: the git arguments of the first printed publish command, which empties the public repository's tracked files before the export tree is copied in (git -C <public repo> <these>). Empty: no publish commands are printed.",
+  "public_check_publish_clear_args": []
+ }
+}

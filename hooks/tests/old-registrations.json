@@ -1,0 +1,432 @@
+{
+ "_comment": "Hook registrations M1 (hook-entry.py) replaces: settings = the hooks object of ~/.claude/settings.json before M1; frontmatter = the hooks of agents/<name>.md before M1. hooks/tests/test_hook_entries.py checks every one is replaced by an entry step or listed as removed in hooks/hook_entries.py.",
+ "settings": {
+  "PreToolUse": [
+   {
+    "matcher": "Write|Edit|NotebookEdit",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/block-write-outside-project.py",
+      "onFailure": "block"
+     }
+    ]
+   },
+   {
+    "matcher": "Read|Grep|Glob|Edit|Write|NotebookEdit|Agent|Skill",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/plan-guard.py"
+     }
+    ]
+   },
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/subagent-budget.py"
+     },
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/worker-budget.py"
+     },
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/agent-guard.py"
+     },
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/worker-progress.py",
+      "async": true
+     }
+    ]
+   },
+   {
+    "matcher": "Skill",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/fetch-origin.py"
+     }
+    ]
+   },
+   {
+    "matcher": "Agent|Task|SendMessage",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/dispatch-guard.py"
+     }
+    ]
+   },
+   {
+    "matcher": "Bash",
+    "hooks": [
+     {
+      "type": "command",
+      "if": "Bash(git *)",
+      "command": "python3 ~/.claude/hooks/crap-gate.py",
+      "timeout": 1800
+     },
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/merge-commit-guard.py"
+     },
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/bash-guard.py"
+     }
+    ]
+   }
+  ],
+  "SubagentStart": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/agent-guard.py"
+     },
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/subagent-budget.py"
+     },
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/subagent-cost.py"
+     }
+    ]
+   }
+  ],
+  "SubagentStop": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/agent-guard.py"
+     },
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/subagent-cost.py"
+     },
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/subagent-budget.py"
+     }
+    ]
+   }
+  ],
+  "UserPromptSubmit": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/fetch-origin.py"
+     },
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/worker-control.py",
+      "timeout": 30
+     },
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/agent-guard.py"
+     },
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/checkpoint-status.py"
+     },
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/wt_events.py"
+     }
+    ]
+   }
+  ],
+  "PostToolUse": [
+   {
+    "matcher": "Bash",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/finish-worktree.py"
+     },
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/merge-origin.py"
+     },
+     {
+      "type": "command",
+      "if": "Bash(git commit *)",
+      "command": "python3 ~/.claude/hooks/flow-next.py"
+     }
+    ]
+   },
+   {
+    "matcher": "Agent|SendMessage",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/flow-next.py"
+     }
+    ]
+   }
+  ],
+  "SessionStart": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/skills/repo-plan/repo-check.py --hook"
+     }
+    ]
+   },
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/session-mark.py"
+     }
+    ]
+   }
+  ],
+  "SessionEnd": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/session-mark.py"
+     }
+    ]
+   }
+  ],
+  "Stop": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "python3 ~/.claude/hooks/worker-stop.py"
+     }
+    ]
+   }
+  ]
+ },
+ "frontmatter": {
+  "code-reviewer": {
+   "PreToolUse": [
+    {
+     "matcher": "SubagentHandback",
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 ~/.claude/hooks/report-check.py"
+      }
+     ]
+    },
+    {
+     "matcher": "*",
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 ~/.claude/hooks/mutation.py start",
+       "async": true
+      }
+     ]
+    },
+    {
+     "matcher": "Bash",
+     "hooks": [
+      {
+       "type": "command",
+       "if": "Bash(mutate-request *)",
+       "command": "python3 ~/.claude/hooks/mutation.py",
+       "timeout": 1800
+      }
+     ]
+    },
+    {
+     "matcher": "SubagentHandback",
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 ~/.claude/hooks/mutation.py",
+       "timeout": 3600
+      }
+     ]
+    }
+   ],
+   "PostToolUse": [
+    {
+     "matcher": "SubagentHandback",
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 ~/.claude/hooks/flow-next.py report"
+      }
+     ]
+    },
+    {
+     "matcher": "SubagentHandback",
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 ~/.claude/hooks/agent-guard.py"
+      }
+     ]
+    }
+   ],
+   "Stop": [
+    {
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 ~/.claude/hooks/mutation.py",
+       "timeout": 3600
+      }
+     ]
+    }
+   ]
+  },
+  "developer": {
+   "PreToolUse": [
+    {
+     "matcher": "SubagentHandback",
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 ~/.claude/hooks/report-check.py"
+      }
+     ]
+    },
+    {
+     "matcher": "SubagentHandback",
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 ~/.claude/hooks/crap-gate.py",
+       "timeout": 1800
+      }
+     ]
+    }
+   ],
+   "PostToolUse": [
+    {
+     "matcher": "SubagentHandback",
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 ~/.claude/hooks/flow-next.py report"
+      }
+     ]
+    }
+   ],
+   "Stop": [
+    {
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 ~/.claude/hooks/crap-gate.py",
+       "timeout": 1800
+      }
+     ]
+    }
+   ]
+  },
+  "flow-judge": {
+   "PreToolUse": [
+    {
+     "matcher": "SubagentHandback",
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 ~/.claude/hooks/report-check.py"
+      }
+     ]
+    }
+   ],
+   "PostToolUse": [
+    {
+     "matcher": "SubagentHandback",
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 ~/.claude/hooks/flow-next.py report"
+      }
+     ]
+    }
+   ]
+  },
+  "qa-planner": {
+   "PreToolUse": [
+    {
+     "matcher": "SubagentHandback",
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 ~/.claude/hooks/report-check.py"
+      }
+     ]
+    }
+   ],
+   "PostToolUse": [
+    {
+     "matcher": "SubagentHandback",
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 ~/.claude/hooks/flow-next.py report"
+      }
+     ]
+    }
+   ]
+  },
+  "qa": {
+   "PreToolUse": [
+    {
+     "matcher": "SubagentHandback",
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 ~/.claude/hooks/report-check.py"
+      }
+     ]
+    }
+   ],
+   "PostToolUse": [
+    {
+     "matcher": "SubagentHandback",
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 ~/.claude/hooks/flow-next.py report"
+      }
+     ]
+    }
+   ]
+  },
+  "spec-reviewer": {
+   "PreToolUse": [
+    {
+     "matcher": "SubagentHandback",
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 ~/.claude/hooks/report-check.py"
+      }
+     ]
+    }
+   ],
+   "PostToolUse": [
+    {
+     "matcher": "SubagentHandback",
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 ~/.claude/hooks/flow-next.py report"
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

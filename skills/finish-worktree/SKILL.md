@@ -23,7 +23,7 @@ The worktree, and with it `plans/<topic>.md` and its `.hook-only/runs/` result f
    ```
    Put the gap reasons from `## Cost` into the summary below, not the history.
 3. `python3 ~/.claude/skills/repo-plan/cost-history.py rows ../worktrees/<topic>` lists the subagent rounds for the summary.
-4. Summarise for the user, in Traditional Chinese: total cost, where it ran over or under its estimate and why, and each friction item.
+4. Summarise for the user, in the user's preferred language: total cost, where it ran over or under its estimate and why, and each friction item.
 5. For each friction item, propose a destination and discuss it with the user: project config (project `CLAUDE.md`, project skills), user config (`~/.claude`: global `CLAUDE.md`, agents, skills, hooks, settings), TODO, or nothing. Change nothing until the user agrees. Point out items that will clearly keep recurring. You can't write `~/.claude`: build each changed file in full under `$TMPDIR/home-apply-<topic>/` (same layout as `~/.claude`; Bash can diff and test there), show the diff, and give the user the apply steps in your reply, one command per line (`cp`, then `git -C ~/.claude add <paths>` and the commit); for `settings.json`, which you can't read, give the exact block and where it goes.
 6. If the user keeps an incident log outside this home (your memory says where and in what format), append each friction item there: keep the details, only add, never edit (correct an earlier entry with a new one that says so). Tell the user what you added.
 7. Remove the handled items from `plans/friction.md`.

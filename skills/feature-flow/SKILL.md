@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 # Feature flow
 
-You are the **orchestrator session** (指揮 session): you coordinate, the agents do the work. If the project has a `project-flow` skill, load it now: it holds the project's test command, protected test paths and other project-only steps.
+You are the **orchestrator session** (the session that directs one worktree's work): you coordinate, the agents do the work. If the project has a `project-flow` skill, load it now: it holds the project's test command, protected test paths and other project-only steps.
 
 ## Mode
 
@@ -38,7 +38,7 @@ The step files sit next to this file, outside the working directory, where the R
 ## Rules that come first
 
 - **Round cap:** each review loop (spec-reviewer ↔ qa-planner, code-reviewer ↔ qa/developer) gets at most 3 rounds. If the reviewer hasn't approved after round 3, stop and report to the user: what is open, what each side argues, your recommendation. Continue only when the user says so. Rounds caused by a rule the user changed mid-way count from that change.
-- **Never guess open questions:** spec conflicts and 「待討論」 items go to the user. 「待討論」 parts are never implemented or tested.
+- **Never guess open questions:** spec conflicts and `to be discussed` items (older plans: 「待討論」) go to the user. `to be discussed` parts are never implemented or tested.
 - **Models** are fixed in each agent's frontmatter. The only override: if `developer` is stuck on the same tests for 2 rounds, or the change is architectural, spawn a new `developer` with `model: opus` and hand it the previous report. Tell the user when you do.
 
 ## Must-fix vs TODO
@@ -52,23 +52,23 @@ You decide, and tell the user why:
 ## Records in `plans/<topic>.md`
 
 - **`## Cost`:** subagent rounds are recorded by the hooks (estimate from the `Budget:` line, actual USD and minutes per round); `cost-history.py rows` prints them as table rows, and `/finish-worktree` imports them. The plan's `## Cost` holds only what the hooks can't know: one `orchestrator` row (your estimate before starting, actual minutes at the end) when you work directly without subagents, and a gap reason per subagent round that ran over or under (`<agent> <round>: <reason>`). Worker runs are recorded from their run files; don't add rows for them.
-- **`## Friction`:** anything that wasted time or tokens, not only blockers: from agents' `Friction`, from your own work, and whenever the user says 「記一筆」. Each item: symptom, cost (estimate vs actual), cause, suggested destination (project config / user config / docs / TODO / none). The planning session reads both sections with the user before the worktree is removed.
+- **`## Friction`:** anything that wasted time or tokens, not only blockers: from agents' `Friction`, from your own work, and whenever the user says "note this" (or the same request in the user's language). Each item: symptom, cost (estimate vs actual), cause, suggested destination (project config / user config / docs / TODO / none). The planning session reads both sections with the user before the worktree is removed.
 
 ## Wrap up (every class)
 
 1. Update the project's TODO yourself: the developer's "TODO changes" plus the reviewer's follow-ups. Agents never edit it, so parallel branches rarely conflict there.
    Search TODO for this topic (feature name, class names, notes like "decide when doing X") and tick or reword every matching line, including follow-ups that earlier branches left for this topic.
-2. In one response, the project's completion check (project-flow) and `git status --short`. In local mode (`FLOW_INTEGRATION=local`) with a `.claude/quality-gates.json`, skip the completion check: auto-merge runs the repo's `test` and `checks` (format, lint) in the sandbox before merging and refuses on a failure, so run only `git status --short`. Then commit with explicit paths, in logical commits (e.g. tests, implementation, TODO). Untracked entries that are character devices are sandbox placeholders (empty `/dev/null` mounts over protected paths such as `.bash_profile`, `.zshrc`, `.mcp.json`, `.vscode`, `.claude/hooks`, `.claude/agents`; they appear in the session's own project directory): not changes, never staged. Check with `find <path> -maxdepth 0 -type c`.
+2. In one response, the project's completion check (project-flow) and `git status --short`. In local mode (`python3 ~/.claude/config/homeconfig.py flow-mode` prints `local`) with a `.claude/quality-gates.json`, skip the completion check: auto-merge runs the repo's `test` and `checks` (format, lint) in the sandbox before merging and refuses on a failure, so run only `git status --short`. Without the file auto-merge still runs the tests of the languages detected from the tracked files on their home profiles (`~/.claude/config/home.json` (`toolchains`)), but those carry no repo lint, so run the completion check as usual. Then commit with explicit paths, in logical commits (e.g. tests, implementation, TODO). Untracked entries that are character devices are sandbox placeholders (empty `/dev/null` mounts over protected paths such as `.bash_profile`, `.zshrc`, `.mcp.json`, `.vscode`, `.claude/hooks`, `.claude/agents`; they appear in the session's own project directory): not changes, never staged. Check with `find <path> -maxdepth 0 -type c`.
 3. After the last commit, in one response:
-   - write `PR_DESCRIPTION.md` (untracked) **in English**, like commit messages, even when the plan and the conversation are in Traditional Chinese: changes, intentional behaviour differences, test coverage, what isn't automated, manual verification steps, follow-ups, the PR attribution line. If a commit is added later, update it.
+   - write `PR_DESCRIPTION.md` (untracked) **in English**, like commit messages, even when the plan and the conversation are in another language: changes, intentional behaviour differences, test coverage, what isn't automated, manual verification steps, follow-ups, the PR attribution line. If a commit is added later, update it.
    - complete `## Cost` and `## Friction`.
-   - check for conflicts without creating a commit: `bash ~/.claude/skills/pr-conflict/pr-conflict.sh <topic> --local` (uses the last fetch; the worktree can't fetch). Output starts with `CONFLICT:`: load `merge.md` (`cat ~/.claude/skills/feature-flow/merge.md`, plus `agents.md` if your class didn't load it) and follow it before pushing. `OK`: no merge, even if the default branch moved.
+   - check for conflicts without creating a commit: `bash ~/.claude/skills/pr-conflict/pr-conflict.sh <topic> --local` (against the topic's integration branch: the local main in local mode, else the last fetch of origin's default branch; the worktree can't fetch). Output starts with `CONFLICT:`: load `merge.md` (`cat ~/.claude/skills/feature-flow/merge.md`, plus `agents.md` if your class didn't load it) and follow it before pushing. `OK`: no merge, even if the default branch moved.
 4. Give the user the push command (worktrees never push themselves). Never merge.
 5. Tell the user: if the PR later shows conflicts, run `/pr-conflict <topic>` from the main checkout; after the PR is merged, run `/finish-worktree <topic>` from the main checkout.
 
 ## Practical notes
 
-- **Your own text:** in a headless worker nobody reads it until the run ends, so write it in the **Full** style (global `CLAUDE.md` 「輸出」). The `STATUS:` / `PHASE:` lines, plan edits, commit messages and `PR_DESCRIPTION.md` keep their normal form. In a desktop session with the user present, use Lite.
+- **Your own text:** in a headless worker nobody reads it until the run ends, so write it in the **Full** style (global `CLAUDE.md` "Output"). The `STATUS:` / `PHASE:` lines, plan edits, commit messages and `PR_DESCRIPTION.md` keep their normal form. In a desktop session with the user present, use Lite.
 - **Fewer requests:** every request re-reads your whole context. Put independent tool calls in one response (several Bash, Edit or Read calls in one response cost one request; don't chain commands with `&&` or `;`, that gets blocked); Read a file once and don't re-read what is already in your context; don't poll. In a headless worker the conversation is compacted at the phase boundaries (test-first.md), so earlier reports and outputs don't stay.
 - Each round can take 8–35 minutes. Run agents in the background and don't poll.
 - Keep branches as small as the user agrees to; cost grows with rounds and with how much each agent reads. Every agent step resends its whole context, even when it is "just running tests".

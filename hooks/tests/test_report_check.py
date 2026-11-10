@@ -1,4 +1,4 @@
-"""report-check.py and report_schema.py (2026-11-02): flow agents' hand-backs start with the report header.
+"""report_check.py and report_schema.py: flow agents' hand-backs start with the report header.
 
 Run: uv run --offline --no-project --with pytest python -m pytest ~/.claude/hooks/tests/test_report_check.py
 """
@@ -10,7 +10,8 @@ import sys
 import pytest
 
 HOOKS = os.environ.get("QG_HOOKS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, HOOKS)
+sys.path.insert(0, os.path.join(HOOKS, "lib"))
+import homepath  # noqa: E402,F401  (the tree under test: config/ and the hooks/ role directories)
 import report_schema  # noqa: E402
 
 
@@ -19,7 +20,7 @@ def handback(tmp_path, role, message, agent="a1234567"):
 		"tool_input": {"message": message}, "cwd": str(tmp_path), "session_id": "s"}
 	env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_")}
 	env["CLAUDE_PROJECT_DIR"] = str(tmp_path)
-	result = subprocess.run([sys.executable, os.path.join(HOOKS, "report-check.py")], input=json.dumps(data),
+	result = subprocess.run([sys.executable, os.path.join(HOOKS, "hook-entry.py"), "check", "report-check"], input=json.dumps(data),
 		capture_output=True, text=True, env=env)
 	return (json.loads(result.stdout)["hookSpecificOutput"] if result.stdout.strip() else None), result.stderr
 
@@ -74,7 +75,7 @@ def test_a_valid_hand_back_resets_the_count(tmp_path):
 def test_the_main_session_is_ignored(tmp_path):
 	data = {"hook_event_name": "PreToolUse", "tool_name": "SubagentHandback", "tool_input": {"message": "x"},
 		"cwd": str(tmp_path)}
-	result = subprocess.run([sys.executable, os.path.join(HOOKS, "report-check.py")], input=json.dumps(data),
+	result = subprocess.run([sys.executable, os.path.join(HOOKS, "hook-entry.py"), "check", "report-check"], input=json.dumps(data),
 		capture_output=True, text=True)
 	assert result.stdout.strip() == ""
 

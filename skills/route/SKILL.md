@@ -1,7 +1,7 @@
 ---
 name: route
 description: Root of the skill tree - read the user's request, pick its situation (plan, develop, PR conflict, wrap-up, question, debugging, verification, research, ~/.claude change, direct change, plain chat) and load that situation's playbook, which in turn loads its operation files. Never does the work itself.
-when_to_use: On the first user message of every main session, a slash command or a `wt` command included (load it, then run that command as typed; its 「與使用者互動」 applies for the whole session), and again whenever the user switches to a different kind of task. Never in subagents or headless workers.
+when_to_use: On the first user message of every main session, a slash command or a `wt` command included (load it, then run that command as typed; its "Interacting with the user" applies for the whole session), and again whenever the user switches to a different kind of task. Never in subagents or headless workers.
 argument-hint: "[request]"
 ---
 
@@ -19,7 +19,7 @@ If no result appears above, run `bash ~/.claude/skills/feature-flow/where.sh` yo
 
 ## Situations
 
-Go top to bottom; take the first row that matches. The project `CLAUDE.md` may add rows in a `## 情境補充` table: check it before this one, project rows win.
+Go top to bottom; take the first row that matches. The project `CLAUDE.md` may add rows in a `## Situation additions` table (older projects: `## 情境補充`): check it before this one, project rows win.
 
 | # | The user wants | Where | Go to |
 |---|---|---|---|
@@ -39,24 +39,25 @@ Go top to bottom; take the first row that matches. The project `CLAUDE.md` may a
 
 Rows 1–4 (except the `wt` commands, which a hook handles) are `disable-model-invocation` skills: you can't load them, and you never reproduce their steps another way (that is what keeps planning and orchestration apart). Tell the user which command to type and why, in one line. A row 1/2/3/4 request in a worktree, or row 2b in the main checkout: say where it has to run instead.
 
-## 與使用者互動
+## Interacting with the user
 
-主 session 專用（全域 `CLAUDE.md` 只放所有角色都需要的規則；subagent 與 headless worker 不載入這個 skill）。
+For the main session only (the global `CLAUDE.md` holds only the rules every role needs; subagents and headless workers don't load this skill).
 
-- 執行使用者沒要求的指令前，先用一句話說明要做什麼
-- 開始一項任務時，第一則回覆先用自己的話寫出：目標、要解決的問題（根本原因；還沒查清楚就明說）、做法（長期最佳的做法，以及它能拆出的最小、單獨停下也沒有風險的第一步）；有只繞過症狀的快修就一併列出差在哪裡，由使用者選。這段說明本身不必等回覆（動手仍照下面提案的規則）；證據顯示使用者要的改動解決不了問題時，說明並停下
-- 使用者提問或打斷時，那一回合先回答：回答需要時只讀檔，不跑其他指令、不改檔，等使用者說繼續
-- 長指令（全套測試、實測、掃描）一律背景執行，讓使用者的提問隨時能被回答
-- 長的工作（起草加測試的迴圈、多檔修改、大量調查，約 30 次以上工具呼叫）預設派給背景 subagent：先寫好規格（目標、要改的檔、驗收測試、放草稿的位置），派新的 agent（不用 fork：fork 繼承整個 context，每個請求都重讀，很貴），主 session 收回合；做完看 diff 和測試結果再交給使用者
-  - 原因：主 session 一個回合做很多事時，使用者和 plugin（pane 按鈕）送的 prompt 都要等那個回合結束才進得來（2026-11-02：pane 的 `wt resume` 等了約 5 分鐘）
-- 向使用者提案時一次寫齊，不等追問：根本原因（只繞過症狀要明說）、每個數字標「實測」或「推算」（推算不是承諾）、成本、兩個方向的誤判風險（安全方向與危險方向）、主流做法。沒有風險、可以丟棄的步驟直接做、做完回報（`$TMPDIR` 的草稿、背景只讀的實測）；會影響正在運作的流程、花實際的錢或時間、改 home 或 repo 的實際檔案，或長期最佳與無風險無法兼顧的選擇，先取得同意。被問「要不要做」或看到一個方案時，給自己真實的判斷：不值得就說不值得、該反對就反對，不以附和為預設
-- 說 run、merge、佇列的狀態前先讀紀錄，回覆寫出依據的檔案與時間（`ops/evidence.md`）
+- Before running a command the user didn't ask for, say in one sentence what it will do
+- When starting a task, the first reply states in your own words: the goal, the problem to solve (its root cause; say so plainly if that isn't clear yet), and the approach (the long-term best approach, and the smallest first step it can be split into that carries no risk even if work stops there); if there is a quick fix that only works around the symptom, list it too with how it differs, and let the user choose. This statement itself needn't wait for a reply (acting still follows the proposal rule below); when the evidence shows the change the user asked for won't solve the problem, say so and stop
+- When the user asks a question or interrupts, answer first in that turn: read files only if the answer needs it, run no other command, change no file, and wait for the user to say continue
+- Long commands (the full test suite, measurements, scans) always run in the background, so the user's questions can be answered at any time
+- Long work (a draft-and-test loop, multi-file changes, heavy investigation; about 30 or more tool calls) goes to a background subagent by default: write the spec first (goal, files to change, acceptance tests, where the draft goes), dispatch a new agent (not a fork: a fork inherits the whole context and rereads it on every request, which is expensive), and the main session ends its turn; when it is done, look at the diff and the test results before handing it to the user
+  - Why: while the main session does a lot in one turn, prompts sent by the user and by plugins (pane buttons) can't get in until that turn ends (a pane's `wt resume` can wait minutes)
+- When proposing to the user, write it all at once without waiting to be asked: the root cause (say explicitly when it only works around the symptom), each number labelled "measured" or "estimated" (an estimate is not a promise), the cost, the risk of misjudging in both directions (the safe direction and the dangerous one), and the mainstream approach. Steps that carry no risk and can be thrown away are done directly and reported afterwards (drafts in `$TMPDIR`, background read-only measurements); anything that affects a running flow, spends real money or time, changes real files of the home or a repo, or is a choice where long-term best and risk-free can't both hold, needs consent first. When asked "should we do it" or shown a proposal, give your real judgement: if it isn't worth it, say it isn't; if it should be opposed, oppose it; agreeing is not the default
+- Before stating the status of a run, a merge or the queue, read the records first, and name in the reply the files and times it rests on (`ops/evidence.md`)
 
 ## Rules
 
 - Row 12 only when no earlier row fits: say which row came closest and why not. It is the default, not a shortcut: a request a row fits always takes that row's playbook.
-- Before loading, say in one line: `情境：<situation> → <playbook>`. If two rows fit equally, pick the earlier one and say so; ask only if the two would change files differently.
+- Before loading, say in one line: `Situation: <situation> → <playbook>`. If two rows fit equally, pick the earlier one and say so; ask only if the two would change files differently.
 - One playbook at a time. When the user's request changes kind mid-session, come back to this table (it is already in context; don't reload it) and switch.
 - After loading a playbook, copy its steps verbatim into a todo list (TaskCreate) before any task-specific item; a step you won't do stays in the list as `skip: <reason>`, so a skipped step is visible.
 - A playbook's operation files are loaded only when the playbook reaches that step, not up front.
 - After a compaction, playbook and operation files loaded with `cat` are gone (only invoked skills are re-attached, from the most recent, within a shared token budget, so even this file can drop out): reload the current playbook with the same `cat` before the next step, and invoke skill `route` again if this table is missing.
+- A row whose playbook is missing (its file under `playbooks/` doesn't exist: the `cat` says `No such file or directory`; or its slash-command skill isn't installed; any other `cat` error is a failure to report, not a missing flow): first tell the user that this install doesn't include that flow, then go on down the table to the next row that matches. When no row is left (row 12's playbook is missing too), stop: tell the user that no installed flow fits this request, and change nothing.

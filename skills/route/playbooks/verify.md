@@ -7,3 +7,4 @@
 3. **Use real data where the project keeps it** (project `CLAUDE.md` says where); never re-fetch from a paid or quota-limited source just to verify. After a passed verification that produced new real data, move it to that place.
 4. **Pass/fail per step**, with output. A failure → `playbooks/debug.md`; don't patch it silently.
 5. Long-running server for a check → start it in the background and stop it when the check is done.
+6. Retro: `ops/retro.md`.

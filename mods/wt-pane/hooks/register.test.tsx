@@ -26,6 +26,7 @@ const VIEW: View = {
     {
       topic: 'clean',
       run: 2,
+      phase: 'running',
       startedMs: NOW - 12 * 60000,
       estMinutes: 40,
       capUsd: 4,
@@ -138,6 +139,18 @@ test('a subagent held by a hook shows its own time and how long it has waited, o
   await terminal.unmount()
 })
 
+test('a worker without an end that is not running by its phase is drawn as such, without the office', async ($, on) => {
+  const dead = { ...VIEW.workers[0], phase: 'orphan' as const }
+  on('state.get', () => ({ value: { value: { shape: 'view-3', value: { ...VIEW, workers: [dead] } }, version: 1 } }))
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.findAll({ type: 'Raster' })).length).toBe(0)
+  const drawn = await texts(ui)
+  expect(drawn).toMatch(/\? clean · run 2 · orphan/)
+  expect(drawn).not.toMatch(/◆ orchestrator/)
+  await ui.unmount()
+})
+
 test('with no worker the pane says so', async ($, on) => {
   on('state.get', () => ({ value: { value: { shape: 'view-3', value: { workers: [], controls: [], nowMs: NOW, tick: 0 } }, version: 1 } }))
 
@@ -197,6 +210,7 @@ const CONTROLLED: View = {
     { topic: 'held', action: 'resume', run: 1, isHeld: true },
     { topic: 'old', why: 'no estimate yet (plans/worker/old.json)', isHeld: false },
   ],
+  flowMode: 'origin',
 }
 
 test('the pane draws a control row per topic, with the auto switch, on every surface', async ($, on) => {
@@ -212,6 +226,27 @@ test('the pane draws a control row per topic, with the auto switch, on every sur
     expect(drawn).toMatch(/HOLD/)
     expect(drawn).toMatch(/no estimate yet \(plans\/worker\/old\.json\)/)
     expect((await ui.findAll({ type: 'Button' })).length).toBe(5) // auto, local, launch, resume, notices
+    await ui.unmount()
+  }
+})
+
+test('under each control row the run line shows, an orphan with its to-do, without another button', async ($, on) => {
+  const controls = [
+    {
+      topic: 'dead-t', action: 'stop' as const, run: 1, isHeld: false, phase: 'orphan' as const,
+      human: { line: 'dead-t · run 1 may have died: no sign of life since 05:41', todo: { text: 'check its process with wt status dead-t', command: 'wt status dead-t' } },
+    },
+    { topic: 'odd-t', why: 'no estimate yet (plans/worker/odd-t.json)', isHeld: false, statusError: 'run status unreadable: boom' },
+    { topic: 'old-t', action: 'launch' as const, isHeld: false },
+  ]
+  values(on, { view: { shape: 'view-3', value: { ...CONTROLLED, controls } } })
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    const drawn = await texts(ui)
+    expect(drawn).toMatch(/dead-t · run 1 may have died: no sign of life since 05:41 → check its process with wt status dead-t/)
+    expect(drawn).toMatch(/run status unreadable: boom/)
+    expect(drawn).toMatch(/^stop$/m) // the row's own action, as wt_controls.py printed it
+    expect((await ui.findAll({ type: 'Button' })).length).toBe(5) // auto, local, stop, launch, notices
     await ui.unmount()
   }
 })
@@ -307,6 +342,49 @@ test('the header shows the estimate and where the run stops', async ($, on) => {
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await texts(ui)).toMatch(/12m\/40m \(stop 50m\) · \$0\.75\/\$2\.00 \(stop \$2\.50\)/)
+  await ui.unmount()
+})
+
+test('the local switch shows the flow mode wt_controls.py reported', async ($, on) => {
+  values(on, { view: { shape: 'view-3', value: { ...CONTROLLED, flowMode: 'local' } } })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await texts(ui)).toMatch(/local: on/)
+  await ui.unmount()
+})
+
+test('the Controls line shows config mode DEV as wt_controls.py reported it', async ($, on) => {
+  values(on, { view: { shape: 'view-3', value: { ...CONTROLLED, configMode: 'DEV' } } })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await texts(ui)).toMatch(/config: DEV/)
+  await ui.unmount()
+})
+
+test('the Controls line shows config mode TEST as wt_controls.py reported it', async ($, on) => {
+  values(on, { view: { shape: 'view-3', value: { ...CONTROLLED, configMode: 'TEST' } } })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await texts(ui)).toMatch(/config: TEST/)
+  await ui.unmount()
+})
+
+test('an unreadable config mode shows its error, never a guessed DEV', async ($, on) => {
+  const configModeError = "config mode unreadable: <home>/config/local.test.json: missing"
+  values(on, { view: { shape: 'view-3', value: { ...CONTROLLED, configModeError } } })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const drawn = await texts(ui)
+  expect(drawn).toMatch(/config: error/)
+  expect(drawn).toMatch(/local\.test\.json: missing/)
+  expect(drawn).not.toMatch(/config: DEV/)
+  await ui.unmount()
+})
+
+test('an unreadable flow mode shows its error, never local: off', async ($, on) => {
+  const flowModeError = "flow mode unreadable: environment variable FLOW_INTEGRATION='Local' is not allowed"
+  values(on, { view: { shape: 'view-3', value: { ...CONTROLLED, flowMode: undefined, flowModeError } } })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const drawn = await texts(ui)
+  expect(drawn).toMatch(/local: error/)
+  expect(drawn).toMatch(/FLOW_INTEGRATION='Local' is not allowed/)
+  expect(drawn).not.toMatch(/local: off/)
   await ui.unmount()
 })
 
@@ -443,6 +521,15 @@ test('with the pane open the band offers to close it', async ($, on) => {
   await ui.unmount()
 })
 
+test('the band counts running workers by their phase, not by a missing exit file', async ($, on) => {
+  // Neither row has an exit file; only the one whose phase (wt_controls.py, hooks/lib/runstate.py) is running counts.
+  const dead = { ...VIEW.workers[0], topic: 'dead', phase: 'orphan' as const }
+  bandEngine(on, [{ id: 'wt-pane' }], { view: { shape: 'view-3', value: { ...VIEW, workers: [VIEW.workers[0], dead] } } })
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await texts(ui)).toMatch(/▶ 1 running/)
+  await ui.unmount()
+})
+
 test('the band yields to a survey', async ($, on) => {
   bandEngine(on, [], {})
   // Nothing draws beneath the plugin in a test: this hook stands for the engine (the survey's drawing).
@@ -572,4 +659,98 @@ test('an approval in progress shows its run and time and no merge button, so not
   expect((await ui.findAll({ type: 'Button' })).some(found => found.key === 'merge-held-t')).toBe(false)
   await ui.unmount()
   expect(submitted).toEqual([])
+})
+
+// The local switch (switchLocal): wt_controls.py's answers stand for the hooks (the mode it reports; with
+// --local, the check), and every write and toast is kept. The main checkout is /m (git's common dir /m/.git).
+type LocalSeen = { runs: string[][]; writes: [string, string][]; toasts: string[] }
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function localEngine(on: any, mode: 'origin' | 'local', check: { exitCode?: number; blocker?: string } = {}): LocalSeen {
+  values(on, { view: { shape: 'view-3', value: { ...CONTROLLED, flowMode: mode } } })
+  on('clock.now', () => ({ value: NOW }))
+  const seen: LocalSeen = { runs: [], writes: [], toasts: [] }
+  const answer = (stdout: string, exitCode = 0) =>
+    ({ value: { exitCode, stdout, stderr: exitCode === 0 ? '' : 'boom', isStdoutTruncated: false, isStderrTruncated: false } })
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  on('process.run', (_: unknown, e: any) => {
+    const argv = [...e.argv] as string[]
+    seen.runs.push(argv)
+    if (argv[0] === 'git') return answer('/m/.git\n')
+    const checking = argv.includes('--local')
+    if (checking && check.exitCode) return answer('', check.exitCode)
+    const blocker = checking && check.blocker ? { local_blocker: check.blocker } : {}
+    return answer(JSON.stringify({ schema: 1, controls: [], flow_mode: mode, ...blocker }))
+  })
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  on('fs.write', (_: unknown, e: any) => {
+    seen.writes.push([e.path, e.text])
+    return { value: undefined }
+  })
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  on('ui.toast', (_: unknown, e: any) => {
+    seen.toasts.push(e.text)
+    return { value: undefined }
+  })
+  return seen
+}
+
+// The pane's `local` button pressed twice (a press is the person's own act): the first arms it, the second
+// switches; the switch is not awaited by the press, so wait for its toast.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function pressLocalTwice($: any, seen: LocalSeen): Promise<void> {
+  for (let press = 0; press < 2; press += 1) {
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    await ui.press({ key: 'local' })
+    await settle()
+    if (press === 0) expect(seen.writes).toEqual([])
+    for (let wait = 0; press === 1 && wait < 40 && seen.toasts.length === 0; wait += 1) await settle()
+    await ui.unmount()
+  }
+}
+
+test('the local button writes local to the main checkout record on the second press only', async ($, on) => {
+  const seen = localEngine(on, 'origin')
+  await pressLocalTwice($, seen)
+  expect(seen.writes).toEqual([['/m/.hook-only/flow-mode', 'local\n']])
+  expect(seen.runs.some(argv => argv[0] === 'python3' && argv.slice(-3).join(' ') === '/m --local on')).toBe(true)
+  expect(seen.toasts).toEqual(['wt local: on — new topics start from and merge into the local main; running topics keep their mode'])
+})
+
+test('switching off writes origin to the main checkout record', async ($, on) => {
+  const seen = localEngine(on, 'local')
+  await pressLocalTwice($, seen)
+  expect(seen.writes).toEqual([['/m/.hook-only/flow-mode', 'origin\n']])
+  expect(seen.runs.some(argv => argv[0] === 'python3' && argv.slice(-3).join(' ') === '/m --local off')).toBe(true)
+  expect(seen.toasts[0]).toMatch(/^wt local: off/)
+})
+
+test('a blocker from wt_controls.py --local leaves the record unwritten and says why', async ($, on) => {
+  const seen = localEngine(on, 'origin', { blocker: 'the local main is 2 commits behind origin/main' })
+  await pressLocalTwice($, seen)
+  expect(seen.writes).toEqual([])
+  expect(seen.toasts).toEqual(['wt local: not switched: the local main is 2 commits behind origin/main'])
+})
+
+test('a check that fails leaves the record unwritten', async ($, on) => {
+  const seen = localEngine(on, 'origin', { exitCode: 1 })
+  await pressLocalTwice($, seen)
+  expect(seen.writes).toEqual([])
+  expect(seen.toasts[0]).toMatch(/^wt local: not switched: can't check \(wt_controls\.py failed \(exit 1\)/)
+})
+
+test('`wt local on` typed by anything but the person is refused before any check or write', async ($, on) => {
+  const seen = localEngine(on, 'origin')
+  let entered = 0
+  on('prompt.submit', (_, e) => {
+    entered += 1
+    return { text: e.text }
+  })
+
+  // A test's submission is a plugin's, not the person's Enter.
+  const result = await $.prompt.submit({ text: 'wt local on' })
+
+  expect(result.drop).toBe('wt local: only the person typing at the prompt can switch it')
+  expect(entered).toBe(0)
+  expect(seen.runs).toEqual([])
+  expect(seen.writes).toEqual([])
 })

@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to <repo>/.claude/guard-paths.json. tests: test code, developer must not touch. qaConfig: test-runner config, same rule. shared: either may change, reminder only. Without this file only git refs are checked.",
+  "_comment": "Copy to <repo>/.claude/guard-paths.json. tests: test code, developer must not touch. qaConfig: test-runner config, same rule. shared: either may change, reminder only. Without this file only git refs are checked. Each entry is a repo-relative path matched by qg_common.pathMatches (agent-guard and the quality gates alike): a plain entry is that path or a directory prefix (\"tests/\", \"pkg/testdata\"); a glob keeps * and ? within one path segment and **/ matches any depth including the root (\"**/*_test.go\" covers a_test.go and pkg/a_test.go; \"*_test.go\" only the root); a glob ending in / covers every path under a directory it matches (\"**/testdata/\").",
   "tests": [],
   "qaConfig": [],
   "shared": []

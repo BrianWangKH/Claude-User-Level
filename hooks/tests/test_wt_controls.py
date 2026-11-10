@@ -1,4 +1,4 @@
-"""wt_controls.py: one place decides what the pane, auto mode and `wt ...` may do (2026-11-01); and
+"""wt_controls.py: one place decides what the pane, auto mode and `wt ...` may do; and
 agent-guard's explained ref moves (parallel workers).
 
 Run: uv run --offline --no-project --with pytest python -m pytest ~/.claude/hooks/tests/test_wt_controls.py
@@ -12,17 +12,24 @@ import time
 
 import pytest
 
+import config_fixtures
+
 HOOKS = os.environ.get("QG_HOOKS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, HOOKS)
+import config_fixtures  # noqa: E402
+
+# Programs run from the session's clean copy of the tree (config_fixtures.cleanHome): the person's files in the
+# tree under test (config/local.json, local.test.json, mode, state/) never change a result.
+RUN_HOOKS = os.path.join(config_fixtures.cleanHome(), "hooks")
+sys.path.insert(0, os.path.join(HOOKS, "lib"))
+import homepath  # noqa: E402,F401  (the tree under test: config/ and the hooks/ role directories)
 
 import wt_controls  # noqa: E402
 
 SESSION = "11111111-2222-3333-4444-555555555555"
-DEFAULTS = json.load(open(os.path.join(HOOKS, "budget-defaults.json"), encoding="utf-8"))
 
 
 def loadGuard():
-	spec = importlib.util.spec_from_file_location("agent_guard", os.path.join(HOOKS, "agent-guard.py"))
+	spec = importlib.util.spec_from_file_location("agent_guard", os.path.join(HOOKS, "guards", "agent_guard.py"))
 	module = importlib.util.module_from_spec(spec)
 	spec.loader.exec_module(module)
 	return module
@@ -104,7 +111,7 @@ def test_done_without_a_new_estimate_offers_nothing(main):
 	older(estimate(main, "t"))  # written before the run started
 	finishedRun(w, 1, "STATUS: done\nall green")
 	row = wt_controls.control(main, "t")
-	assert "action" not in row and "STATUS: done" in row["why"] and row["auto"]["ok"] is False
+	assert "action" not in row and "STATUS done" in row["why"] and row["auto"]["ok"] is False
 
 
 def test_a_new_estimate_after_done_brings_resume_back_even_with_equal_numbers(main):
@@ -153,7 +160,7 @@ def test_running_is_read_from_the_run_files_not_the_pid(main, exitText, running)
 # --- local switch -------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("rows, wantOn, behind, expected", [
-	([{"topic": "a", "action": "stop"}], True, 0, "a worker is running (a)"),
+	([{"topic": "a", "action": "stop"}], True, 0, None),  # a running worker keeps its own mode
 	([{"topic": "b", "action": "launch"}], False, 0, "planned but not launched (b)"),
 	([], True, None, "can't compare"),
 	([], True, 3, "3 commit(s) behind"),
@@ -165,14 +172,47 @@ def test_local_blocker(rows, wantOn, behind, expected):
 	assert (why is None) if expected is None else (expected in why)
 
 
+def test_the_mode_can_switch_while_a_worker_runs(main):
+	"""A topic's mode is fixed at its first launch (its worktree's flow-mode record), so `wt local` may switch
+	while one runs: only a planned topic not launched yet, or (on) a lagging local main, blocks it."""
+	w = worktree(main, "t")
+	estimate(main, "t")
+	state(main, "t")
+	(w / ".hook-only" / "runs" / "est-1.json").write_text(json.dumps({"minutes": 20, "usd": 2}))
+	(w / ".hook-only" / "runs" / "start-1").write_text(time.strftime("%Y-%m-%dT%H:%M:%S%z") + "\n")
+	out = subprocess.run([sys.executable, os.path.join(RUN_HOOKS, "worker", "wt_controls.py"), str(main), "--local", "off"],
+		capture_output=True, text=True, check=True).stdout
+	data = json.loads(out)
+	assert [r.get("action") for r in data["controls"]] == ["stop"] and data["controls"][0]["phase"] == "running"
+	assert data["local_blocker"] is None
+	assert wt_controls.localBlocker(data["controls"], True, 0) is None  # on: only a lagging main would block
+
+
 def test_the_command_prints_schema_1_and_the_local_blocker(main):
 	worktree(main, "fresh")
 	estimate(main, "fresh")
-	out = subprocess.run([sys.executable, os.path.join(HOOKS, "wt_controls.py"), str(main), "--local", "off"],
+	out = subprocess.run([sys.executable, os.path.join(RUN_HOOKS, "worker", "wt_controls.py"), str(main), "--local", "off"],
 		capture_output=True, text=True, check=True).stdout
 	data = json.loads(out)
 	assert data["schema"] == 1 and [r["topic"] for r in data["controls"]] == ["fresh"]
 	assert "planned but not launched (fresh)" in data["local_blocker"] and data["plans_visible"] is True
+
+
+@pytest.mark.parametrize("value, mode", [(None, "origin"), ("local", "local"), ("bogus", None)])
+def test_the_command_reports_the_flow_mode_or_why_it_cant(main, value, mode):
+	"""The pane's local switch shows this: the main checkout's record (none: origin), or why it can't be read."""
+	subprocess.run(["git", "init", "-q", str(main)], check=True)  # a main checkout: its record is read
+	if value:
+		(main / ".hook-only").mkdir(exist_ok=True)
+		(main / ".hook-only" / "flow-mode").write_text(value + "\n")
+	out = subprocess.run([sys.executable, os.path.join(RUN_HOOKS, "worker", "wt_controls.py"), str(main)],
+		capture_output=True, text=True, check=True).stdout
+	data = json.loads(out)
+	assert data["flow_mode"] == mode and data["schema"] == 1
+	if mode is None:
+		assert "'bogus'" in data["flow_mode_error"] and "origin, local" in data["flow_mode_error"]
+	else:
+		assert "flow_mode_error" not in data
 
 
 @pytest.mark.parametrize("hide", ["empty", "missing"])
@@ -181,18 +221,144 @@ def test_a_checkout_whose_plans_cant_be_seen_says_so(main, hide):
 	(main / "plans" / "worker").rmdir()  # the sandbox's mask: an empty folder
 	if hide == "missing":
 		(main / "plans").rmdir()
-	out = subprocess.run([sys.executable, os.path.join(HOOKS, "wt_controls.py"), str(main)],
+	out = subprocess.run([sys.executable, os.path.join(RUN_HOOKS, "worker", "wt_controls.py"), str(main)],
 		capture_output=True, text=True, check=True).stdout
 	assert json.loads(out)["plans_visible"] is False
+
+
+# --- safety values config/local.json loosens: one event per distinct change, never a refusal ----------
+
+def loosenedEvents(main):
+	path = main / ".hook-only" / "events.jsonl"
+	lines = path.read_text().splitlines() if path.exists() else []
+	return [e for e in map(json.loads, lines) if e["kind"] == "setting-loosened"]
+
+
+@pytest.fixture
+def personal(tmp_path, monkeypatch):
+	"""A copy of the tree whose config/local.json the test writes: wt_controls reads it through homeconfig in this
+	process (useConfig) and in a wt_controls.py run from the copy (write.home)."""
+	home = config_fixtures.copyHome(os.path.dirname(HOOKS), tmp_path / "home")
+	d = home / "config"
+	config_fixtures.useConfig(monkeypatch, d)
+	wt_controls.homeconfig._cache.clear()
+
+	def write(data):
+		(d / "local.json").write_text(json.dumps(data))
+		wt_controls.homeconfig._cache.clear()
+	write.home = home
+	return write
+
+
+def test_a_loosened_safety_value_is_announced_once_per_distinct_change(main, personal):
+	wt_controls.announceLoosened(main)
+	assert loosenedEvents(main) == []  # nothing loosened, nothing said
+	personal({"gate_sandbox": {"hide": ["/home"]}})
+	wt_controls.announceLoosened(main)
+	wt_controls.announceLoosened(main)
+	events = loosenedEvents(main)
+	assert len(events) == 1 and events[0]["topic"] == "config"
+	assert "gate_sandbox.hide removes /Users" in events[0]["text"] and "allowed" in events[0]["text"]
+	personal({"gate_sandbox": {"hide": ["/home"], "home_write": ["~"]}})
+	wt_controls.announceLoosened(main)
+	assert len(loosenedEvents(main)) == 2 and "gate_sandbox.home_write adds ~" in loosenedEvents(main)[1]["text"]
+	personal({})
+	wt_controls.announceLoosened(main)
+	assert len(loosenedEvents(main)) == 2  # back to home: quiet
+	personal({"auto_merge_hold": {"paths": []}})
+	wt_controls.announceLoosened(main)
+	assert len(loosenedEvents(main)) == 3 and "auto_merge_hold.paths removes" in loosenedEvents(main)[2]["text"]
+
+
+def test_a_loosening_is_never_announced_when_its_record_cant_be_written(main, personal):
+	personal({"gate_sandbox": {"protect": []}})
+	(main / ".hook-only" / "config").write_text("a file where the record's folder would be")
+	for _ in range(3):
+		wt_controls.announceLoosened(main)
+	assert loosenedEvents(main) == []
+
+
+def test_the_command_shows_the_queue_limits_and_a_loosening_without_refusing_anything(main, personal):
+	worktree(main, "fresh")
+	estimate(main, "fresh")
+	personal({"gate_sandbox": {"hide": []}})
+	program = str(personal.home / "hooks" / "worker" / "wt_controls.py")
+	run = lambda: json.loads(subprocess.run([sys.executable, program, str(main)],
+		capture_output=True, text=True, check=True).stdout)
+	first, second = run(), run()
+	assert [r["topic"] for r in first["controls"]] == ["fresh"] and first["controls"][0]["action"] == "launch"
+	assert first == second and len(loosenedEvents(main)) == 1
+	assert first["config_mode"] == "DEV" and "config_mode_error" not in first
+
+
+@pytest.mark.parametrize("files, mode, error", [
+	({}, "DEV", None),
+	({"mode": "DEV\n"}, "DEV", None),
+	({"mode": "TEST\n", "local.test.json": "{}"}, "TEST", None),
+	({"mode": "TEST\n"}, None, "local.test.json: missing"),
+	({"mode": "TEST\n", "local.test.json": "{"}, None, "not valid JSON"),
+	({"mode": "PROD\n"}, None, "config mode 'PROD' is not one of DEV, TEST"),
+])
+def test_config_mode_is_a_controls_field_never_a_guess(main, personal, files, mode, error):
+	for name, text in files.items():
+		(personal.home / "config" / name).write_text(text)
+	wt_controls.homeconfig._cache.clear()
+	result = wt_controls.configMode()
+	if error is None:
+		assert result == {"config_mode": mode}
+	else:
+		assert result["config_mode"] is None and error in result["config_mode_error"]
+
+
+def invalidEvents(main):
+	path = main / ".hook-only" / "events.jsonl"
+	lines = path.read_text().splitlines() if path.exists() else []
+	return [e["text"] for e in map(json.loads, lines) if e["kind"] == "setting-invalid"]
+
+
+def test_an_invalid_local_value_is_warned_once_per_distinct_problem(main, personal):
+	wt_controls.announceInvalid(main)
+	assert invalidEvents(main) == []
+	personal({"budget": {"queue_workers_max": "two", "budget_headroom": 2}})
+	for _ in range(3):
+		wt_controls.announceInvalid(main)
+	assert invalidEvents(main) == [
+		"local budget.queue_workers_max invalid (a string where home.json has a number), using home value",
+		"local budget.budget_headroom invalid (renamed to budget.budget_headroom_factor), using home value",
+	]
+	personal({"budget": {"queue_workers_max": "two"}, "rules": {}})
+	wt_controls.announceInvalid(main)
+	assert len(invalidEvents(main)) == 3 and invalidEvents(main)[2].startswith("local rules invalid (a registry")
+	personal({})
+	wt_controls.announceInvalid(main)
+	personal({"budget": {"queue_workers_max": "two"}})
+	wt_controls.announceInvalid(main)
+	assert len(invalidEvents(main)) == 3  # seen once, never again
+
+
+def test_a_broken_local_json_is_one_warning(main, personal):
+	personal({})
+	(personal.home / "config" / "local.json").write_text("{oops")
+	wt_controls.homeconfig._cache.clear()
+	wt_controls.announceInvalid(main)
+	wt_controls.announceInvalid(main)
+	assert len(invalidEvents(main)) == 1 and invalidEvents(main)[0].startswith("local local.json invalid (not valid JSON")
+
+
+def test_an_unrecorded_problem_goes_to_stderr_and_emits_nothing(main, personal, capsys):
+	personal({"budget": {"queue_workers_max": -1}})
+	(main / ".hook-only" / "config").write_text("a file where the record's folder would be")
+	wt_controls.announceInvalid(main)
+	assert invalidEvents(main) == []
+	assert "budget.queue_workers_max invalid (below 0), using home value" in capsys.readouterr().err
 
 
 # --- worker-control.py uses the same rule -------------------------------------------------------
 
 def test_wt_resume_after_done_is_refused_until_a_new_estimate(main, tmp_path):
 	home = tmp_path / "home"
-	(home / ".claude" / "hooks").mkdir(parents=True)
-	(home / ".claude" / "hooks" / "budget-defaults.json").write_text(json.dumps(DEFAULTS))
-	wrapper = home / ".claude" / "hooks" / "run-worker.sh"
+	(home / ".claude" / "hooks" / "worker").mkdir(parents=True)
+	wrapper = home / ".claude" / "hooks" / "worker" / "run-worker.sh"
 	wrapper.write_text("#!/usr/bin/env bash\nexit 0\n")
 	wrapper.chmod(0o755)
 	w = worktree(main, "t")
@@ -202,7 +368,7 @@ def test_wt_resume_after_done_is_refused_until_a_new_estimate(main, tmp_path):
 
 	def wt():
 		env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_")} | {"HOME": str(home)}
-		result = subprocess.run([sys.executable, os.path.join(HOOKS, "worker-control.py")], env=env,
+		result = subprocess.run([sys.executable, os.path.join(RUN_HOOKS, "worker", "worker-control.py")], env=env,
 			input=json.dumps({"prompt": "wt resume t", "cwd": str(main)}), capture_output=True, text=True)
 		assert result.returncode == 0, result.stderr
 		return json.loads(result.stdout)
@@ -329,17 +495,19 @@ def approvingRun(main, decision_age=60):
 
 def test_an_approval_in_progress_replaces_the_merge_offer(main):
 	w = approvingRun(main)
+	started = time.strftime("%Y-%m-%dT%H:%M:%S%z")  # as worker-control.py writes it, with started_epoch
 	(w / ".hook-only" / "runs" / "approve-1.json").write_text(json.dumps({"run": 1, "pid": 999999,
-		"started": "2026-11-02T07:45:12+0800", "started_epoch": time.time()}))
+		"started": started, "started_epoch": time.time()}))
 	row = wt_controls.control(main, "t")
-	assert row["approving"] == {"run": 1, "since": "07:45"} and "merge" not in row
+	assert row["approving"] == {"run": 1, "since": started[11:16]} and "merge" not in row
 
 
 def test_an_approval_record_older_than_the_decision_or_of_another_run_offers_merge(main):
 	w = approvingRun(main, decision_age=0)
 	runs = w / ".hook-only" / "runs"
-	(runs / "approve-1.json").write_text(json.dumps({"run": 1, "pid": 1, "started": "2026-11-02T07:45:12+0800",
-		"started_epoch": time.time() - 60}))  # auto-merge wrote its decision after it: finished
+	before = time.time() - 60
+	(runs / "approve-1.json").write_text(json.dumps({"run": 1, "pid": 1, "started": time.strftime(
+		"%Y-%m-%dT%H:%M:%S%z", time.localtime(before)), "started_epoch": before}))  # the decision came after: finished
 	assert "approving" not in wt_controls.control(main, "t") and "merge" in wt_controls.control(main, "t")
 	(runs / "approve-1.json").rename(runs / "approve-0.json")
 	assert "merge" in wt_controls.control(main, "t")

@@ -1,4 +1,4 @@
-"""Scripted flow (2026-11-02): flow-next.py turns agent reports and the orchestrator's own calls into the next
+"""Scripted flow: flow-next.py turns agent reports and the orchestrator's own calls into the next
 step, and worker-control.py switches a topic to it only with "flow": "scripted".
 
 Run: uv run --offline --no-project --with pytest python -m pytest ~/.claude/hooks/tests/test_flow_next.py
@@ -14,8 +14,19 @@ import sys
 import pytest
 
 HOOKS = os.environ.get("QG_HOOKS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+import config_fixtures  # noqa: E402
+
+sys.path.insert(0, os.path.join(HOOKS, "lib"))
+import homepath  # noqa: E402,F401  (the tree under test: config/ and the hooks/ role directories)
+import homeconfig  # noqa: E402
+import report_schema  # noqa: E402
+
+# Programs run from the session's clean copy of the tree (config_fixtures.cleanHome): the person's files in the
+# tree under test (config/local.json, local.test.json, mode, state/) never change a result.
+RUN_HOOKS = os.path.join(config_fixtures.cleanHome(), "hooks")
+RUN_SKILLS = os.path.join(config_fixtures.cleanHome(), "skills")
 SKILLS = os.path.join(os.path.dirname(HOOKS), "skills")
-FLOW = os.path.join(HOOKS, "flow-next.py")
+FLOW = os.path.join(RUN_HOOKS, "worker", "flow-next.py")
 COLUMNS = ["date", "topic", "branch", "class", "agent", "round", "estTok", "actTok",
 	"estMin", "actMin", "estUsd", "actUsd", "note"]
 TOPIC = "demo"
@@ -25,8 +36,8 @@ TOPIC = "demo"
 def home(tmp_path):
 	h = tmp_path / "home"
 	(h / ".claude").mkdir(parents=True)
-	os.symlink(HOOKS, h / ".claude" / "hooks")
-	os.symlink(SKILLS, h / ".claude" / "skills")
+	os.symlink(RUN_HOOKS, h / ".claude" / "hooks")
+	os.symlink(RUN_SKILLS, h / ".claude" / "skills")
 	return h
 
 
@@ -327,7 +338,7 @@ def test_an_unreadable_judge_answer_stops(home, repo):
 
 
 def loadWorkerControl():
-	spec = importlib.util.spec_from_file_location("worker_control", os.path.join(HOOKS, "worker-control.py"))
+	spec = importlib.util.spec_from_file_location("worker_control", os.path.join(HOOKS, "worker", "worker-control.py"))
 	module = importlib.util.module_from_spec(spec)
 	spec.loader.exec_module(module)
 	return module
@@ -351,7 +362,7 @@ def test_dispatch_guard_accepts_the_dispatch_next_md_asks_for(home, repo):
 	message = text.split('prompt="')[1].rsplit('")', 1)[0].replace("\\n", "\n")
 	data = {"hook_event_name": "PreToolUse", "tool_name": "Agent", "cwd": str(repo), "session_id": "s",
 		"tool_input": {"subagent_type": "qa-planner", "prompt": message}}
-	result = subprocess.run([sys.executable, os.path.join(HOOKS, "dispatch-guard.py")], input=json.dumps(data),
+	result = subprocess.run([sys.executable, os.path.join(RUN_HOOKS, "hook-entry.py"), "check", "dispatch-guard"], input=json.dumps(data),
 		capture_output=True, text=True, env=env(home, repo))
 	out = json.loads(result.stdout)["hookSpecificOutput"]
 	assert out["permissionDecision"] == "allow", result
@@ -359,7 +370,7 @@ def test_dispatch_guard_accepts_the_dispatch_next_md_asks_for(home, repo):
 	assert prompt.startswith("Read .hook-only/flow/prompts/1.md and follow it.\nBudget: ") and "Estimate: 6 min, $0.8" in prompt
 
 
-# retry after a fix, and verdicts after the status word (model-config-empty run 1, 2026-11-02)
+# retry after a fix, and verdicts after the status word
 
 def test_a_report_without_its_header_stops_with_the_problems(home, repo):
 	d = Driver(home, repo)
@@ -454,3 +465,137 @@ def test_worker_control_resumes_scripted_only_when_the_flow_can_go_on(home, repo
 	flowState(repo).write_text(json.dumps(s))
 	assert wc.scripted_runnable(repo)  # the resume retries the stop by itself
 	assert 'Agent(subagent_type="qa"' in nextMd(repo)
+
+
+def test_cost_history_is_the_tree_s_own_never_the_home_s(tmp_path, monkeypatch):
+	"""H13/T3: flow-next.py finds cost-history.py beside the tree it runs from (homepath), whatever HOME says."""
+	monkeypatch.setenv("HOME", str(tmp_path / "elsewhere"))
+	spec = importlib.util.spec_from_file_location("flow_next_paths", os.path.join(HOOKS, "worker", "flow-next.py"))
+	module = importlib.util.module_from_spec(spec)
+	spec.loader.exec_module(module)
+	tree = os.path.dirname(os.path.realpath(HOOKS))
+	assert module.COST_HISTORY == os.path.join(tree, "skills", "repo-plan", "cost-history.py")
+	assert os.path.isfile(module.COST_HISTORY)
+
+
+# round numbers, what a commit stages, the refused-commit cap
+
+def budgetValue(key):
+	"""The tree's own budget setting the hook reads (homeconfig on the tree's config/, as the conftest sets it)."""
+	return homeconfig.load("budget")[key]
+
+
+def roundOf(repo):
+	"""The number on the Round: line of the newest assignment."""
+	lines = [line for line in promptFile(repo, lastPromptNumber(repo)).splitlines() if line.startswith("Round: ")]
+	assert len(lines) == 1, lines
+	return int(lines[0].split()[1])
+
+
+def test_every_assignment_names_the_agent_s_round_in_its_role(home, repo):
+	"""Round numbers come from the dispatches the hook counted, never from files an agent writes (read-only roles
+	can't write any): a resumed agent and a fresh one of the same role both count, other roles don't."""
+	d = Driver(home, repo)
+	d.init()
+	assert roundOf(repo) == 1 and "(your dispatches as qa-planner on this topic" in promptFile(repo, 1)
+	d.round("qa-planner", PLANNER_OK)
+	assert roundOf(repo) == 1  # the spec reviewer's first
+	d.round("spec-reviewer", "STATUS: DONE\nVERDICT: CHANGES REQUESTED\nQUESTIONS: none\n\n1. missing case")
+	assert roundOf(repo) == 2  # the planner again
+	d.round("qa-planner", "STATUS: DONE\nQUESTIONS: Q1\n\nQ1: which key?\n")
+	assert roundOf(repo) == 1 and "Kind: questions" in promptFile(repo, lastPromptNumber(repo))  # flow-judge's first
+	d.round("flow-judge", "DECISION: answer Q1 use `failures`")
+	assert roundOf(repo) == 3
+
+
+def test_needs_test_keeps_the_developer_s_unfinished_change_out_of_the_tests_commit(home, repo):
+	"""The developer's half-done file was staged into "Add requested tests" and agent-guard
+	blamed qa. The tests commit takes only what qa changed; the developer's next commit takes its own file even when
+	that round changes nothing more."""
+	d = Driver(home, repo)
+	d.init("small fix")
+	d.round("qa", "STATUS: DONE\n\n1 failing", files={"tests/test_bug.py": "def test_b():\n    assert False\n"})
+	d.commit()
+	d.round("developer", "STATUS: DONE\nNEEDS-TEST: a test that executes src.py:1", files={"src.py": "x = 4\n",
+		"helper.py": "y = 1\n"})
+	assert "leave it as it is" in promptFile(repo, lastPromptNumber(repo))
+	d.round("qa", "STATUS: DONE\n\nadded", files={"tests/test_more.py": "def test_c():\n    assert True\n"})
+	assert git(repo, "diff", "--cached", "--name-only").split() == ["tests/test_more.py"]
+	assert "src.py" not in nextMd(repo) and "helper.py" not in nextMd(repo)
+	d.commit()
+	assert git(repo, "show", "--name-only", "--format=", "HEAD").split() == ["tests/test_more.py"]
+	assert (repo / "src.py").read_text() == "x = 4\n" and (repo / "helper.py").exists()
+	assert "dev-finish" in nextMd(repo)
+	d.round("developer", "STATUS: DONE\n\nnothing left")
+	assert sorted(git(repo, "diff", "--cached", "--name-only").split()) == ["helper.py", "src.py"]
+	d.commit()
+	assert "/code-review low" in nextMd(repo)
+
+
+def test_a_path_another_role_left_dirty_stays_out_unless_this_role_changes_it(home, repo):
+	"""A dirty path at the role's dispatch counts only once its content changes in the round."""
+	(repo / "notes.txt").write_text("left over\n")
+	d = Driver(home, repo)
+	d.init("small fix")
+	d.round("qa", "STATUS: DONE\n\n1 failing", files={"tests/test_bug.py": "def test_b():\n    assert False\n"})
+	assert git(repo, "diff", "--cached", "--name-only").split() == ["tests/test_bug.py"]
+	d.commit()
+	d.round("developer", "STATUS: DONE\n\nall pass", files={"src.py": "x = 6\n", "notes.txt": "changed\n"})
+	assert sorted(git(repo, "diff", "--cached", "--name-only").split()) == ["notes.txt", "src.py"]
+
+
+def refuse(d, repo, files):
+	"""The orchestrator's commit was denied: it sends the denial to the fresh agent next.md names."""
+	assert "Refusal:" in nextMd(repo)
+	d.round("qa", "STATUS: DONE\n\nfixed", files=files)
+
+
+def test_refused_tests_commits_stop_at_the_configured_cap(home, repo):
+	"""Crap-gate refused the tests commit five times, each sent to a fresh qa. At the
+	flow_refused_commits_max-th commit attempt the denial ends the run with needs-decision instead."""
+	cap = budgetValue("flow_refused_commits_max")
+	d = Driver(home, repo)
+	d.init("small fix")
+	d.round("qa", "STATUS: DONE\n\n1 failing", files={"tests/test_bug.py": "def test_b():\n    assert False\n"})
+	for attempt in range(2, cap + 1):
+		refuse(d, repo, {"tests/test_bug.py": f"def test_b():\n    assert {attempt} == 0\n"})
+	text = nextMd(repo)
+	assert 'git commit -m "Add tests for demo"' in text and "Agent(" not in text and "Refusal:" not in text
+	assert "end the run" in text and "STATUS: needs-decision" in text and f"refused {cap} times in a row" in text
+	assert state(repo)["phase"] == "running"  # a resume tries the commit again
+	d.commit()
+	assert 'Agent(subagent_type="developer"' in nextMd(repo) and "tests" not in state(repo)["commit_attempts"]
+
+
+def test_a_commit_that_goes_through_resets_the_refusal_count(home, repo):
+	d = Driver(home, repo)
+	d.init("small fix")
+	d.round("qa", "STATUS: DONE\n\n1 failing", files={"tests/test_bug.py": "def test_b():\n    assert False\n"})
+	refuse(d, repo, {"tests/test_bug.py": "def test_b():\n    assert 1 == 0\n"})
+	d.commit()
+	assert state(repo)["commit_attempts"] == {} and "qa" not in state(repo)["since"]
+
+
+def handbackCheck(repo, agent, role, message):
+	"""report-check (hook-entry.py's handback check) on one hand-back of agent in repo: the deny, or None."""
+	data = {"hook_event_name": "PreToolUse", "tool_name": "SubagentHandback", "agent_id": agent, "agent_type": role,
+		"tool_input": {"message": message}, "cwd": str(repo), "session_id": "s"}
+	environment = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_")}
+	environment["CLAUDE_PROJECT_DIR"] = str(repo)
+	result = subprocess.run([sys.executable, os.path.join(RUN_HOOKS, "hook-entry.py"), "check", "report-check"],
+		input=json.dumps(data), capture_output=True, text=True, env=environment)
+	return json.loads(result.stdout)["hookSpecificOutput"] if result.stdout.strip() else None
+
+
+def test_a_header_less_report_let_through_after_max_denials_stops_the_flow(home, repo):
+	"""The two layers in a row: report-check refuses the same agent's header-less hand-back
+	max_denials times, lets the next through, and that one (the only one PostToolUse reports) stops the flow."""
+	d = Driver(home, repo)
+	d.init()
+	agent, _out = d.dispatch("qa-planner")
+	limit = report_schema.load()["max_denials"]
+	refusals = [handbackCheck(repo, agent, "qa-planner", "plan written") for _ in range(limit + 1)]
+	assert [r and r["permissionDecision"] for r in refusals] == ["deny"] * limit + [None]
+	d.report(agent, "qa-planner", "plan written")
+	assert "doesn't follow the report schema (missing `STATUS:` line)" in nextMd(repo)
+	assert state(repo)["phase"] == "stopped"

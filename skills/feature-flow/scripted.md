@@ -10,6 +10,6 @@ This topic runs the scripted flow (`"flow": "scripted"` in `plans/worker/<topic>
    - agent-guard ALERT or HOLD: end the run with `STATUS: blocked` and quote the ALERT in full with its cause (`wt resume` lifts the hold).
    - dispatch-guard "Not enough worker time/budget": do what its message says (`STATUS: blocked`; the hook recorded the dispatch for the automatic resume).
    - anything else: `STATUS: needs-decision`, quoting it.
-5. **`STATUS:` steps:** end your turn with exactly the line the file gives, then the requested explanation in Traditional Chinese.
+5. **`STATUS:` steps:** end your turn with exactly the line the file gives, then the requested explanation in the user's preferred language.
 6. **Manual steps** (wrap-up, `/code-review` for a small fix): follow the text; load what it names with one Bash `cat`. `## QA commits`, `## Reviewer` and the agents' `Friction` are already in the plan; add only your own friction.
-7. Your own text is the **Full** style (global `CLAUDE.md` 「輸出」), one or two lines per turn: nobody reads it before the run ends.
+7. Your own text is the **Full** style (global `CLAUDE.md` "Output"), one or two lines per turn: nobody reads it before the run ends.

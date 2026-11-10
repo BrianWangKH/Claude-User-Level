@@ -11,7 +11,8 @@ user-invocable: false
 - Your dispatch message has a `Budget: <T> min, $<U>` line. Run `date` when you start and check it at natural breaks: you can see the minutes, not the USD.
 - The budget is the expected size of your work, not a limit: aim to finish within it. At its minutes, finish if what remains is small; if the rest clearly won't fit (now or earlier), stop at a clean point and report `CHECKPOINT`: what is done, what you tried, your current hypothesis, what remains, what finishing would cost.
 - Report `BLOCKED` early, without waiting for the budget, if the same failure survives 2 fix attempts, the problem is outside this assignment, the spec is unclear, or the environment blocks you (sandbox, permission, hang).
-- A hook counts both minutes and USD and denies your tool calls a little past the budget (`budget_headroom` × it): a tool call denied with a budget message means stop now and report as the message says. Don't retry the tool or work around it.
+- A hook counts both minutes and USD and denies your tool calls a little past the budget (`budget_headroom_factor` × it): a tool call denied with a budget message means stop now and report as the message says. Don't retry the tool or work around it.
+- A tool call refused by a hook, the permission classifier or the sandbox: never retry it, nor the same kind of operation reworded, split or done another way. Every refused attempt counts, can pause auto mode and can block later calls that would have been allowed. Report it (`BLOCKED` when the rest needs it) with the call and the refusal word for word; only the person, through the permission system, can allow it.
 
 ## Repo
 
@@ -27,7 +28,7 @@ user-invocable: false
 
 ## Tools
 
-- Reading, searching and Bash: the global `CLAUDE.md` 「工具」. qa-planner and spec-reviewer use Bash only to search (`grep`, `rg`, `find`, `git log`/`git show`), never to write files or run tests. To search the repo's own files, prefer `git grep` (tracked files only): a recursive `grep -r` also walks sandbox placeholders for protected paths (`.mcp.json`, `.claude/loop.md`, …) and fills the output with `Permission denied`.
+- Reading, searching and Bash: the global `CLAUDE.md` "Tools". qa-planner and spec-reviewer use Bash only to search (`grep`, `rg`, `find`, `git log`/`git show`), never to write files or run tests. To search the repo's own files, prefer `git grep` (tracked files only): a recursive `grep -r` also walks sandbox placeholders for protected paths (`.mcp.json`, `.claude/loop.md`, …) and fills the output with `Permission denied`.
 - To wait for a background process, use the tool's own background notification (`run_in_background`) or wait on a file it writes (`until [ -e <file> ]; do sleep 5; done`). A PID is only valid inside the same Bash command (`cmd & pid=$!; wait $pid`): each sandboxed Bash command runs in its own pid namespace, so `wait <pid>` or `kill -0 <pid>` in a later command always fails. Never wait with `pgrep -f <pattern>`: the waiting loop's own command line contains the pattern, so it matches itself and never ends. Every wait gets a timeout.
 
 ## Before you hand back
@@ -46,7 +47,7 @@ Start with the **header**: one `FIELD: value` per line, before anything else, no
 | code-reviewer (DONE) | `VERDICT: ...`; with CHANGES REQUESTED, `FIX-QA: F1 F3` and `FIX-DEVELOPER: F2` (must-fix finding ids per route, `none` if none) |
 | developer | `NEEDS-TEST: <what to test>`, only when a test is needed |
 
-Then your role's report, in the **Full** style of the global `CLAUDE.md` 「輸出」: fragments are fine, one fact per line, no preamble, no recap of the assignment, no praise; code, paths, commands, error messages, test names and numbers stay verbatim. Keep it short: the orchestrator re-reads every report on each later request. Long material goes into the files you were asked to write, not into the report. developer and qa: at most about 1,500 characters (status, pass/fail counts, files changed, open problems). Reviewers: the orchestrator passes your findings on verbatim, so write each finding once and tersely (id, file:line, rule, problem, suggested change), without restating context or praise. End with:
+Then your role's report, in the **Full** style of the global `CLAUDE.md` "Output": fragments are fine, one fact per line, no preamble, no recap of the assignment, no praise; code, paths, commands, error messages, test names and numbers stay verbatim. Keep it short: the orchestrator re-reads every report on each later request. Long material goes into the files you were asked to write, not into the report. developer and qa: at most about 1,500 characters (status, pass/fail counts, files changed, open problems). Reviewers: the orchestrator passes your findings on verbatim, so write each finding once and tersely (id, file:line, rule, problem, suggested change), without restating context or praise. End with:
 
 - **Effort:** tool calls (approx.), test runs, minutes from your start `date`.
 - **Friction:** anything that wasted time or tokens (unclear instructions, missing notes, blocked commands, retries), one line each. "None" if none.

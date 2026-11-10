@@ -1,0 +1,12 @@
+# Python style of the home tree (hooks/RULES.md H2): tabs, double quotes, 120 columns.
+# ruff format applies it; existing files are not reformatted yet (their space indentation is debt in
+# tests/conformance.snapshot.json, rule H2). Names are camelCase, which ruff's pep8-naming rules can't
+# express (they require snake_case), so hooks/tools/conformance.py checks naming instead of ruff.
+line-length = 120
+
+[format]
+indent-style = "tab"
+quote-style = "double"
+
+[lint]
+select = ["E9", "F63", "F7", "F82"]

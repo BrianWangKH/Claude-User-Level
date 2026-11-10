@@ -20,6 +20,6 @@ bash ~/.claude/skills/pr-conflict/pr-conflict.sh <topic>
   - A topic built without a worker has no session to resume (`wt resume` says so): give the user `/feature-flow <topic> merge` to send in a session opened in the worktree.
 
   The worktree's `plans/<topic>.md` doesn't need a new section: `merge.md` carries its own worker rules.
-- When the run ends, do what `run-result.py`'s `Next:` line says (it marks the run `(merge)`). `needs-decision` / `blocked`: answers into the worktree plan, re-estimate with `--merge`, `wt resume <topic>`. `done` → the push command; the PR updates itself.
+- When the run ends, do what `run-result.py`'s `Next:` line says (its `PURPOSE: merge` line marks the merge run). `needs-decision` / `blocked`: answers into the worktree plan, re-estimate with `--merge`, `wt resume <topic>`. `done` → the push command; the PR updates itself.
 
 The worktree session never fetches; the merge uses the `origin/<default>` this fetch brought in (worktrees share the repo's refs).

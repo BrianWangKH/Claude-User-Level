@@ -8,21 +8,24 @@
 //
 // Three ways to start and stop workers, all ending in the same prompt `wt launch|resume|stop <topic>`
 // that worker-control.py (UserPromptSubmit) handles, so that hook stays the only thing that starts
-// a worker. What each topic offers is decided by ~/.claude/hooks/wt_controls.py, which the pane runs
+// a worker. What each topic offers is decided by ~/.claude/hooks/worker/wt_controls.py, which the pane runs
 // (the mod draws, it doesn't decide; control.ts reads the output):
 //   by hand  type `wt ...` as before; nothing here changes it.
 //   buttons  the pane's Controls rows: press once to arm, again within confirm_seconds to submit.
 //   auto     `wt auto on` (typed by the person; this session only, off by default): when the
 //            planning session writes <main>/plans/worker/<topic>.json, `wt launch|resume <topic>` is
-//            submitted once the turn ends. Never `wt stop`, never across an agent-guard HOLD.
+//            submitted once the turn ends. Never `wt stop`, never across an agent-guard ALERT or HOLD, never
+//            for an orphan (wt_controls.py "auto").
 // The pane's `local` button (press twice) or `wt local on|off` typed by the person switches the flow mode:
 // <main>/.hook-only/flow-mode ("local" or "origin"; gitignored, so no commit; only hooks and this mod
-// write there, never an agent) for later sessions, which session.start reads into FLOW_INTEGRATION, and
-// this process's environment for the hooks and workers it starts from now on. Not settings.local.json:
-// Claude Code manages that file and left it read-only (2026-10-31), so a write there failed.
-// Refused when wt_controls.py --local says so (a worker runs, a topic is planned but not launched, or,
-// for on, the local main lags origin/main). A topic keeps the mode it was launched in (worker-control.py
-// records .hook-only/flow-mode in its worktree).
+// write there, never an agent), the record every hook and script reads through homeconfig.flowMode, so
+// it takes effect at once for this session, the hooks and the workers started from now on. Not
+// settings.local.json: Claude Code manages that file and left it read-only, so a write there
+// failed.
+// Refused when wt_controls.py --local says so (a topic is planned but not launched, or, for on, the local main
+// lags origin/main). A running worker doesn't block it: a topic keeps the mode it was launched in
+// (worker-control.py records .hook-only/flow-mode in its worktree). Whether a worker runs is its phase from
+// wt_controls.py (hooks/lib/runstate.py), the same state the controls are decided from (model.withPhases).
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, ToolCallResult } from 'claude-code'
 
@@ -41,6 +44,8 @@ import {
   noticeOf,
   parseControls,
   queueAllText,
+  queueLimitsText,
+  runLine,
   sentOutcome,
   settle,
   toastMs,
@@ -49,44 +54,106 @@ import {
   type Controls,
   type WtEvent,
 } from './control'
-import { ago, bar, exitLabel, minutes, snapshot, track, usd, used, workedMs, type Files } from './model'
+import { ago, bar, exitLabel, isRunning, minutes, snapshot, track, usd, used, withPhases, workedMs, type Files } from './model'
 import { deskCentre, fits, MIN_SLOT, office, slotFor } from './office'
 import { encode, walk } from './sprite'
 
 const PANE = 'wt-pane'
 const TOGGLE = /^\s*wt\s+pane\s*$/
 const SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-const DEFAULTS = {
-  poll_seconds: 2,
-  spinner_ms: 250,
-  linger_minutes: 10,
-  bar_width: 12,
+// The mod's settings: ../config.json, read on every load (loadConfig). DEFAULTS is the same file, kept equal
+// by hand (~/.claude/hooks/tests/test_mirrors.py fails while they differ), used when the file can't be read:
+// change both.
+type Config = {
+  poll_seconds: number
+  spinner_ms: number
+  linger_minutes: number
+  bar_width: number
   // stage: the office of the chosen worker (terminal only; other surfaces draw the list);
   // list: text rows; both: the office over the text rows.
-  view: 'stage' as 'list' | 'stage' | 'both',
-  pose_hold_seconds: 20,
-  walk_step: 2, // pixels the orchestrator walks per tick
-  stations: ['qa-planner', 'spec-reviewer', 'qa', 'developer', 'code-reviewer'],
-  colors: {} as Record<string, string>,
-  labels: {} as Record<string, string>,
-  verbs: {} as Record<string, string>,
-  idle_verb: 'thinking',
-  wait_verb: 'waiting',
-  confirm_seconds: 5, // a Start/Stop button submits only on a second press within this
-  band_toggle: true, // the `wt pane` button in the band above the prompt, so the pane is one press away
-  events_poll_seconds: 15, // how often a planning session reads .hook-only/events.jsonl for toasts, pane open or not
-  controls_seconds: 5, // how often the pane asks wt_controls.py again (the worker rows poll every poll_seconds)
+  view: 'list' | 'stage' | 'both'
+  pose_hold_seconds: number
+  walk_step: number // pixels the orchestrator walks per tick
+  stations: string[]
+  colors: Record<string, string>
+  labels: Record<string, string>
+  verbs: Record<string, string>
+  idle_verb: string
+  wait_verb: string
+  confirm_seconds: number // a Start/Stop button submits only on a second press within this
+  band_toggle: boolean // the `wt pane` button in the band above the prompt, so the pane is one press away
+  events_poll_seconds: number // how often a planning session reads .hook-only/events.jsonl for toasts, pane open or not
+  controls_seconds: number // how often the pane asks wt_controls.py again (the worker rows poll every poll_seconds)
   // Yellow header and flashing bubbles at this share of the estimate: 1 = past it, into the
-  // budget_headroom the hooks allow before they stop the run or the subagent.
-  warn_ratio: 1,
+  // budget_headroom_factor the hooks allow before they stop the run or the subagent.
+  warn_ratio: number
   // A sent button stays busy at most this long when no outcome shows (a merge runs the whole test suite first).
-  pending_minutes: 15,
-  notices_max: 30, // events kept in the Notices list
+  pending_minutes: number
+  notices_max: number // events kept in the Notices list
   // How long a toast stays: its length at chars_per_second, within [min, max]; one that needs the person, max.
-  toast_min_seconds: 6,
-  toast_max_seconds: 20,
-  toast_chars_per_second: 20,
+  toast_min_seconds: number
+  toast_max_seconds: number
+  toast_chars_per_second: number
 }
+
+// mirror:begin DEFAULTS ../config.json
+const DEFAULTS: Config = {
+  "poll_seconds": 2,
+  "spinner_ms": 250,
+  "linger_minutes": 10,
+  "bar_width": 12,
+  "view": "stage",
+  "pose_hold_seconds": 20,
+  "walk_step": 2,
+  "stations": [
+    "qa-planner",
+    "spec-reviewer",
+    "qa",
+    "developer",
+    "code-reviewer"
+  ],
+  "colors": {
+    "orchestrator": "#e0e0e0",
+    "qa-planner": "#33cccc",
+    "spec-reviewer": "#4a7dff",
+    "qa": "#33cc66",
+    "developer": "#ddbb22",
+    "code-reviewer": "#bb55dd",
+    "other": "#9aa0a6"
+  },
+  "labels": {
+    "qa-planner": "plan",
+    "spec-reviewer": "spec",
+    "qa": "qa",
+    "developer": "dev",
+    "code-reviewer": "rev"
+  },
+  "verbs": {
+    "Bash": "running",
+    "Read": "reading",
+    "Grep": "reading",
+    "Glob": "reading",
+    "Edit": "writing",
+    "Write": "writing",
+    "NotebookEdit": "writing",
+    "Agent": "assigning",
+    "Task": "assigning",
+    "SendMessage": "assigning"
+  },
+  "idle_verb": "thinking",
+  "wait_verb": "waiting",
+  "confirm_seconds": 5,
+  "controls_seconds": 5,
+  "warn_ratio": 1,
+  "band_toggle": true,
+  "events_poll_seconds": 15,
+  "pending_minutes": 15,
+  "notices_max": 30,
+  "toast_min_seconds": 6,
+  "toast_max_seconds": 20,
+  "toast_chars_per_second": 20
+}
+// mirror:end DEFAULTS
 
 // Where each worker's orchestrator stood when last drawn, by topic, so it walks to the next desk.
 const positions = new Map<string, { x: number; tick: number }>()
@@ -113,7 +180,7 @@ const pending = new Map<string, string>()
 const QUEUE_MS = 60000
 
 let timers: { cancel: () => void }[] = []
-let config = DEFAULTS
+let config: Config = DEFAULTS
 // Whether the last poll found a running worker: the spinner redraws only then.
 let anyRunning = false
 
@@ -245,7 +312,7 @@ async function mainRootOf($: EngineInterface): Promise<string | undefined> {
 // (<home>/mods/wt-pane -> <home>/hooks), not a hard-coded ~/.claude. A failure is an error the pane
 // shows, never an empty Controls list.
 async function fetchControls($: EngineInterface, mainRoot: string, local?: 'on' | 'off'): Promise<Controls> {
-  const script = `${$.plugin.root}/../../hooks/wt_controls.py`
+  const script = `${$.plugin.root}/../../hooks/worker/wt_controls.py`
   const ran = await $.process
     .run(['python3', script, mainRoot, ...(local ? ['--local', local] : [])], { timeoutMs: 10000 })
     .catch((error: unknown) => ({ exitCode: -1, stdout: '', stderr: String(error) }))
@@ -321,15 +388,19 @@ async function start($: EngineInterface) {
       await update($, view, old => ({ ...old, workers: [], controls: [], nowMs, error: 'Not in a git checkout.' }))
       return
     }
-    const workers = await snapshot(files, mainRoot, nowMs, config.linger_minutes * 60000)
     if (nowMs - controlsAt >= config.controls_seconds * 1000) {
       controlsAt = nowMs
       lastControls = await fetchControls($, mainRoot)
     }
+    // Each worker's phase from the controls (hooks/lib/runstate.py): what counts as running.
+    const workers = withPhases(await snapshot(files, mainRoot, nowMs, config.linger_minutes * 60000), lastControls.controls)
     if (mine !== generation) return
-    anyRunning = workers.some(row => row.exitMs === undefined)
-    const { controls, queue, planned, error: controlsError } = lastControls
-    await update($, view, old => ({ ...old, workers, controls, queue, planned, controlsError, nowMs, error: undefined }))
+    anyRunning = workers.some(isRunning)
+    const { controls, queue, planned, queueLimits, flowMode, flowModeError, configMode, configModeError, error: controlsError } = lastControls
+    await update($, view, old => ({
+      ...old, workers, controls, queue, planned, queueLimits, flowMode, flowModeError, configMode, configModeError, controlsError,
+      nowMs, error: undefined,
+    }))
     await settleSent($)
   }
   await refresh()
@@ -358,7 +429,7 @@ async function afterWrite($: EngineInterface, path: string, ran: ToolCallResult)
     if (step.submit && nowMs - (queued.get(topic) ?? 0) > QUEUE_MS) {
       queued.set(topic, nowMs)
       // Sent at the main loop's turn.complete, not from inside the running turn: submitted from here
-      // the prompt never arrived (2026-11-01, one and three topics alike), and the result was ignored.
+      // the prompt never arrived (one and three topics alike), and the result was ignored.
       pending.set(topic, step.submit)
       void $.ui.toast(`wt auto: ${step.submit} after this turn`)
     }
@@ -384,39 +455,25 @@ function sendAuto($: EngineInterface, topic: string, text: string): void {
   )
 }
 
-// The repo's switch file, relative to the main checkout.
+// The repo's switch file, relative to the main checkout (homeconfig.flowMode's main checkout record).
 const FLOW_MODE = '.hook-only/flow-mode'
 
-// At a planning session's start: the switch file, when present, sets FLOW_INTEGRATION for this process
-// and everything it starts. A worker (WT_MAIN_DIR set by worker-control.py) keeps the mode run-worker.sh
-// exported from its topic's record.
-async function loadFlowMode($: EngineInterface): Promise<void> {
-  if ((await $.env.get('WT_MAIN_DIR')) !== undefined) return
-  const mainRoot = await mainRootOf($)
-  if (!mainRoot || !(await $.fs.exists(`${mainRoot}/${FLOW_MODE}`))) return
-  const mode = String(await $.fs.read(`${mainRoot}/${FLOW_MODE}`)).trim()
-  await $.env.set('FLOW_INTEGRATION', mode === 'local' ? 'local' : undefined)
-}
-
-// Whether this process runs in local mode. A failed read counts as off, so the pane always draws.
-async function localModeOn($: EngineInterface): Promise<boolean> {
-  try {
-    return (await $.env.get('FLOW_INTEGRATION')) === 'local'
-  } catch {
-    return false
-  }
-}
-
-// `wt local [on|off]`: the drop text the person sees; never enters the session.
-async function switchLocal($: EngineInterface, command: 'on' | 'off' | 'show', personal: boolean): Promise<string> {
-  const isOn = await localModeOn($)
-  const shown = isOn ? 'on (local main is the source of truth, automatic merge)' : 'off (origin, PRs)'
-  if (command === 'show') return `wt local: ${shown} (wt local on|off)`
-  if (!personal) return 'wt local: only the person typing at the prompt can switch it'
-  const want = command === 'on'
-  if (want === isOn) return `wt local: already ${shown}`
+// `wt local [on|off]` (toggle: the pane's button): the drop text the person sees; never enters the session.
+// The current mode is wt_controls.py's (homeconfig.flowMode, the same reader the hooks use), never read here:
+// an invalid value is reported, not shown as off.
+async function switchLocal($: EngineInterface, command: 'on' | 'off' | 'show' | 'toggle', personal: boolean): Promise<string> {
+  if (command !== 'show' && !personal) return 'wt local: only the person typing at the prompt can switch it'
   const mainRoot = await mainRootOf($)
   if (!mainRoot) return 'wt local: not in a git repo'
+  const current = await fetchControls($, mainRoot)
+  if (current.flowMode === undefined) {
+    return `wt local: can't read the flow mode (${current.flowModeError ?? current.error ?? 'no answer'})`
+  }
+  const isOn = current.flowMode === 'local'
+  const shown = isOn ? 'on (local main is the source of truth, automatic merge)' : 'off (origin, PRs)'
+  if (command === 'show') return `wt local: ${shown} (wt local on|off)`
+  const want = command === 'toggle' ? !isOn : command === 'on'
+  if (want === isOn) return `wt local: already ${shown}`
   const checked = await fetchControls($, mainRoot, want ? 'on' : 'off')
   if (checked.error) return `wt local: not switched: can't check (${checked.error})`
   if (checked.localBlocker) return `wt local: not switched: ${checked.localBlocker}`
@@ -426,7 +483,7 @@ async function switchLocal($: EngineInterface, command: 'on' | 'off' | 'show', p
   } catch (error) {
     return `wt local: not switched: can't write ${path} (${String(error)})`
   }
-  await $.env.set('FLOW_INTEGRATION', want ? 'local' : undefined)
+  await update($, view, old => ({ ...old, flowMode: want ? 'local' : 'origin', flowModeError: undefined }))
   return want
     ? 'wt local: on — new topics start from and merge into the local main; running topics keep their mode'
     : 'wt local: off — new topics use origin and PRs; running topics keep their mode'
@@ -442,11 +499,6 @@ export const register: Register = on => {
     }
     // A reload keeps the pane up but drops the timers: start them again. A headless worker
     // (`claude -p`) loads the mod too and has no panes; nothing to do there.
-    try {
-      await loadFlowMode($)
-    } catch {
-      // no switch file read: the mode stays as the environment has it
-    }
     try {
       if ((await $.ui.panes()).some(pane => pane.id === PANE)) await start($)
     } catch {
@@ -507,7 +559,7 @@ export const register: Register = on => {
     if (e.props.hasSurvey || !config.band_toggle) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
     const isOpen = await isPaneOpen($)
-    const running = isOpen ? (await read($, view)).workers.filter(row => row.exitMs === undefined).length : 0
+    const running = isOpen ? (await read($, view)).workers.filter(isRunning).length : 0
     const unread = (await read($, noticesAtom)).unread
     return (
       <Box flexDirection="row">
@@ -544,7 +596,16 @@ export const register: Register = on => {
     const now = state.nowMs
 
     const head = (row: WorkerRow) => {
-      if (row.exitMs !== undefined) {
+      if (!isRunning(row)) {
+        if (row.exitMs === undefined) {
+          // No end in the run files and not running by its phase: an orphan or an unreadable state (the control
+          // row's line says which and what to do).
+          return (
+            <Text color="yellow">
+              ? {row.topic} · run {row.run} · {row.phase ?? 'state unknown'}
+            </Text>
+          )
+        }
         const cost = row.resultUsd !== undefined ? ` · ${usd(row.resultUsd)}` : ''
         return (
           <Text color={row.exitCode === 0 ? 'green' : 'red'}>
@@ -633,12 +694,13 @@ export const register: Register = on => {
       return <Raster key={`office-${row.topic}`} columns={drawn.columns} rows={drawn.rows} cells={encode(drawn.cells)} />
     }
 
-    // One tab per worker (1-9 press it): ▶ running, ✓ done, ✗ failed. The chosen one is drawn.
+    // One tab per worker (1-9 press it): ▶ running (its phase), ✓ done, ✗ failed, ? no end and not running (an
+    // orphan or an unreadable state). The chosen one is drawn.
     const chosen = await read($, tab)
     const shown = state.workers.find(row => row.topic === chosen) ?? state.workers[0]
     const tabs = state.workers.map((row, index) => {
-      const mark = row.exitMs === undefined ? '▶' : row.exitCode === 0 ? '✓' : '✗'
-      const color = row.exitMs === undefined ? 'cyan' : row.exitCode === 0 ? 'green' : 'red'
+      const mark = isRunning(row) ? '▶' : row.exitMs === undefined ? '?' : row.exitCode === 0 ? '✓' : '✗'
+      const color = isRunning(row) ? 'cyan' : row.exitMs === undefined ? 'yellow' : row.exitCode === 0 ? 'green' : 'red'
       return (
         <Button
           key={`tab-${row.topic}`}
@@ -668,7 +730,7 @@ export const register: Register = on => {
       })
 
     const body = (row: WorkerRow) => {
-      if (row.exitMs !== undefined) return [head(row)]
+      if (!isRunning(row)) return [head(row)]
       const drawn = config.view !== 'list' ? officeOf(row) : undefined
       const text = config.view !== 'stage' || drawn === undefined
       const narrow =
@@ -703,21 +765,34 @@ export const register: Register = on => {
       // Draw the armed label at once, not at the next poll.
       await update($, view, old => ({ ...old, nowMs: at }))
     }
+    // Under each row, what its run is doing (wt_controls.py "human", control.runLine): an orphan or an unreadable
+    // state shows here, with the row's button decided from the same state.
+    const runStatusText = (row: Control) => {
+      const runText = runLine(row)
+      return runText ? (
+        <Text key={`ctl-${row.topic}-run`} color={runText.color} dimColor={!runText.color} wrap="truncate-end">
+          {'  '}{runText.text}
+        </Text>
+      ) : undefined
+    }
     const controlRow = (row: Control) => (
-      <Box key={`ctl-${row.topic}`} flexDirection="row" flexWrap="wrap">
-        <Text>{row.topic} </Text>
-        {busyOf(row.topic) ? (
-          busyText(busyOf(row.topic) as Pending)
-        ) : row.action ? (
-          <Button key={`ctl-${row.topic}-${row.action}`} onPress={press(row, row.action)}>
-            <Text color={isArmed(row, row.action) ? 'yellow' : row.action === 'stop' ? 'red' : 'cyan'}>
-              {label(row.action, isArmed(row, row.action))}
-            </Text>
-          </Button>
-        ) : (
-          <Text dimColor>{row.why}</Text>
-        )}
-        {row.isHeld && <Text color="yellow"> HOLD (decide the ALERT first)</Text>}
+      <Box key={`ctl-${row.topic}`} flexDirection="column">
+        <Box flexDirection="row" flexWrap="wrap">
+          <Text>{row.topic} </Text>
+          {busyOf(row.topic) ? (
+            busyText(busyOf(row.topic) as Pending)
+          ) : row.action ? (
+            <Button key={`ctl-${row.topic}-${row.action}`} onPress={press(row, row.action)}>
+              <Text color={isArmed(row, row.action) ? 'yellow' : row.action === 'stop' ? 'red' : 'cyan'}>
+                {label(row.action, isArmed(row, row.action))}
+              </Text>
+            </Button>
+          ) : (
+            <Text dimColor>{row.why}</Text>
+          )}
+          {row.isHeld && <Text color="yellow"> ALERT/HOLD (decide the ALERT first)</Text>}
+        </Box>
+        {runStatusText(row)}
       </Box>
     )
     // Queue buttons, armed like the controls (two presses within confirm_seconds), each sending a typed
@@ -797,15 +872,15 @@ export const register: Register = on => {
     )
     // The flow mode switch: two presses within confirm_seconds, like the controls; only the person can
     // press a pane button, so no origin check is needed here (the typed `wt local` checks it).
-    const isLocal = await localModeOn($)
+    const isLocal = state.flowMode === 'local'
+    const localLabel = state.flowModeError ? 'local: error' : state.flowMode === undefined ? 'local: ?' : `local: ${isLocal ? 'on' : 'off'}`
     const localArmed = held.topic === '' && held.action === 'local' && now < held.untilMs
     const pressLocal = async () => {
       const at = await $.clock.now()
       const current = await read($, armed)
       if (current.topic === '' && current.action === 'local' && at < current.untilMs) {
         await update($, armed, () => NONE)
-        const wasOn = await localModeOn($)
-        void $.ui.toast(await switchLocal($, wasOn ? 'off' : 'on', true))
+        void $.ui.toast(await switchLocal($, 'toggle', true))
       } else {
         await update($, armed, () => ({ topic: '', action: 'local', untilMs: at + config.confirm_seconds * 1000 }))
       }
@@ -836,6 +911,8 @@ export const register: Register = on => {
         {!state.error && (
           <Box flexDirection="column">
             {state.controlsError && <Text color="red">{state.controlsError}</Text>}
+            {state.flowModeError && <Text color="red">{state.flowModeError}</Text>}
+            {state.configModeError && <Text color="red">{state.configModeError}</Text>}
             <Box flexDirection="row" flexWrap="wrap">
               <Text dimColor>Controls · </Text>
               <Button key="auto" onPress={() => void toggleAuto()}>
@@ -843,15 +920,22 @@ export const register: Register = on => {
               </Button>
               <Text dimColor> · </Text>
               <Button key="local" onPress={() => void pressLocal()}>
-                <Text color={localArmed ? 'yellow' : isLocal ? 'green' : undefined}>
-                  {localArmed ? `confirm local ${isLocal ? 'off' : 'on'}?` : `local: ${isLocal ? 'on' : 'off'}`}
+                <Text color={localArmed ? 'yellow' : state.flowModeError ? 'red' : isLocal ? 'green' : undefined}>
+                  {localArmed ? `confirm local ${isLocal ? 'off' : 'on'}?` : localLabel}
                 </Text>
               </Button>
+              <Text dimColor> · </Text>
+              <Text color={state.configModeError ? 'red' : state.configMode === 'TEST' ? 'yellow' : undefined} dimColor={state.configMode === 'DEV'}>
+                config: {state.configModeError ? 'error' : state.configMode ?? '?'}
+              </Text>
             </Box>
             {state.controls.map(controlRow)}
             {waiting.length > 0 && <Text dimColor>Waiting for you (wt merge)</Text>}
             {waiting.map(mergeRow)}
             {(state.queue ?? []).length > 0 && <Text dimColor>Queue (wt queue)</Text>}
+            {((state.queue ?? []).length > 0 || (state.planned ?? []).length > 0) && queueLimitsText(state.queueLimits) && (
+              <Text dimColor>{queueLimitsText(state.queueLimits)}</Text>
+            )}
             {(state.queue ?? []).map(queueRow)}
             {(state.planned ?? []).length > 0 && (
               <Box flexDirection="row" flexWrap="wrap">

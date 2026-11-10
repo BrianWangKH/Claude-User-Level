@@ -2,8 +2,9 @@
 
 Run: uv run --offline --no-project --with pytest python -m pytest ~/.claude/hooks/tests/test_worker_progress.py
 Each test feeds hook input JSON to the hook as a subprocess, with CLAUDE_PROJECT_DIR pointing at a
-throwaway checkout (not a git repo, so the checkout is that directory) and CLAUDE_PRICES at a price
-table where one input token costs $1e-6.
+throwaway checkout (not a git repo, so the checkout is that directory), the hook run from a copy of the tree
+(config_fixtures.copyHome) whose config (the run number comes from hooks/lib/runstate.py, which reads the
+state registry) has a price table that makes one input token cost $1e-6.
 """
 import json
 import os
@@ -12,9 +13,10 @@ import sys
 
 import pytest
 
+import config_fixtures
+
 HOOKS = os.environ.get("WP_HOOKS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HOOK = os.path.join(HOOKS, "worker-progress.py")
-REAL_HOOKS = os.path.expanduser("~/.claude/hooks")
+HOOK = os.path.join(HOOKS, "budget", "worker-progress.py")
 MODEL = "test-model"
 
 
@@ -23,12 +25,13 @@ def checkout(tmp_path):
 	root = tmp_path / "wt"
 	(root / ".hook-only" / "runs").mkdir(parents=True)
 	(root / ".hook-only" / "runs" / "start-1").write_text("2026-10-30T10:00:00+08:00\n")
-	prices = tmp_path / "prices.json"
-	prices.write_text(json.dumps({"models": {MODEL: {
-		"input": 1, "output": 0, "cache_write_5m": 0, "cache_write_1h": 0, "cache_read": 0}}}))
+	home = config_fixtures.copyHome(os.path.dirname(HOOKS), tmp_path / "home")
+	config = home / "config"
+	config_fixtures.writeSection(config, "prices", {"models": {MODEL: {"input_usd_per_mtok": 1, "output_usd_per_mtok": 0,
+		"cache_write_5m_usd_per_mtok": 0, "cache_write_1h_usd_per_mtok": 0, "cache_read_usd_per_mtok": 0}}})
 	transcript = tmp_path / "session.jsonl"
 	transcript.write_text("")
-	return {"root": root, "prices": prices, "transcript": transcript}
+	return {"root": root, "home": home, "transcript": transcript}
 
 
 def assistant(requestId, inputTokens, model=MODEL):
@@ -37,8 +40,8 @@ def assistant(requestId, inputTokens, model=MODEL):
 
 
 def run(checkout, agentId=None, tool="Bash", toolInput=None, worker=True, raw=None):
-	env = {**os.environ, "CLAUDE_PROJECT_DIR": str(checkout["root"]), "CLAUDE_PRICES": str(checkout["prices"])}
-	env["PYTHONPATH"] = os.pathsep.join([HOOKS, REAL_HOOKS])  # hookonly, prices
+	env = {**os.environ, "CLAUDE_PROJECT_DIR": str(checkout["root"])}
+	env["PYTHONPATH"] = str(checkout["home"] / "hooks" / "lib")  # homepath of the copy: hookonly, homeconfig, prices
 	env.pop("CLAUDE_WORKER_MINUTES", None)
 	if worker:
 		env["CLAUDE_WORKER_MINUTES"] = "30"
@@ -46,7 +49,8 @@ def run(checkout, agentId=None, tool="Bash", toolInput=None, worker=True, raw=No
 		"cwd": str(checkout["root"]), "tool_name": tool, "tool_input": toolInput or {"description": "Run tests"}}
 	if agentId:
 		data.update(agent_id=agentId, agent_type="qa")
-	result = subprocess.run([sys.executable, HOOK], input=raw if raw is not None else json.dumps(data),
+	hook = str(checkout["home"] / "hooks" / os.path.relpath(HOOK, HOOKS))
+	result = subprocess.run([sys.executable, hook], input=raw if raw is not None else json.dumps(data),
 		capture_output=True, text=True, env=env, timeout=30)
 	return result
 
@@ -164,9 +168,11 @@ def test_an_agent_id_that_is_not_a_plain_name_writes_nothing(checkout):
 
 def test_stale_temporary_files_are_removed_fresh_ones_kept(checkout):
 	progressDir = checkout["root"] / ".hook-only" / "hook-read-only" / "progress"
-	(progressDir / ".offsets").mkdir(parents=True)
+	usageDir = checkout["root"] / ".hook-only" / "hook-read-only" / "usage"
+	progressDir.mkdir(parents=True)
+	usageDir.mkdir(parents=True)
 	stale = progressDir / "main.json.111.tmp"
-	staleOffset = progressDir / ".offsets" / "a1.json.222.tmp"
+	staleOffset = usageDir / "progress-a1.json.222.tmp"
 	fresh = progressDir / "q1.json.333.tmp"
 	for path in (stale, staleOffset, fresh):
 		path.write_text("{")
@@ -178,3 +184,12 @@ def test_stale_temporary_files_are_removed_fresh_ones_kept(checkout):
 	assert not staleOffset.exists()
 	assert fresh.exists()
 	assert progress(checkout, "main") is not None
+
+
+def test_the_read_state_is_kept_per_agent_in_the_usage_directory(checkout):
+	checkout["transcript"].write_text(assistant("r1", 100))
+	run(checkout)
+	usageDir = checkout["root"] / ".hook-only" / "hook-read-only" / "usage"
+	state = json.loads((usageDir / "progress-main.json").read_text())
+	assert state["offset"] == len(assistant("r1", 100)) and list(state["requests"]) == ["r1"]
+	assert not (checkout["root"] / ".hook-only" / "hook-read-only" / "progress" / ".offsets").exists()

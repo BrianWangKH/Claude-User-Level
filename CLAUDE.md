@@ -1,85 +1,86 @@
-# 全域規則
+# Global rules
 
-各專案的 `CLAUDE.md` 補充專案專屬的內容（環境、範圍表、程式碼慣例、各類別的具體範例），兩者不衝突時同時適用；專案明確寫出例外時，以專案為準。
+Each project's `CLAUDE.md` adds what is specific to the project (environment, scope table, code conventions, concrete examples per class); both apply where they don't conflict; where the project explicitly states an exception, the project wins.
 
-這份檔案每個 session 和每個 subagent 都會載入，只放所有角色都需要的規則。各角色的流程放在它會載入的地方（見最後的索引）。
+Every session and every subagent loads this file, so it holds only the rules every role needs. Each role's flow lives where that role loads it (see the index at the end).
 
-## 溝通
+## Communication
 
-- 回覆使用者用繁體中文；commit、PR、程式碼註解用英文
-- 主 session 和使用者互動的規則（先回答、提案、依風險取得同意、長工作派 subagent、報狀態的依據）在 skill `route` 的「與使用者互動」：只有主 session 載入，subagent 與 headless worker 不讀
+- Reply to the user in the user's preferred language; when none is stated, in the language the user writes in. Commits, PRs and code comments in English
+- The rules for how the main session works with the user (answer first, proposals, consent by risk, long work to a subagent, the evidence behind a status) are in skill `route`, section "Interacting with the user": only the main session loads it; subagents and headless workers don't read it
 
-## 輸出
+## Output
 
-精簡程度依讀者決定：
-- **Lite**（給使用者的回覆）：答案先行；不寒暄、不客套、不重述問題、不預告「接下來我會…」；保留完整句子，術語第一次出現時附白話解釋
-  - 同一個回覆裡不重複：呼叫工具前只寫一句要做什麼，不先講結論；工具後只寫新的結果，不再重述工具前已經說過的內容
-  - 例外（照常寫，不算預告或重述）：執行使用者沒要求的指令前的一句說明（skill `route` 的「與使用者互動」）、背景 session 要求的做法與進度說明、背景 session 回覆第一句帶出使用者問了什麼
-- **Full**（subagent 回報、headless worker 的指揮文字、寫給另一個 agent 的訊息）：Lite 再加上：可以只寫片語，一句一個事實，因果用 `→`；英文省略冠詞和客套話
-- **不壓縮**：commit message、PR 描述、plan 的決定表、DESIGN／TODO／README、lessons-log（長期給人看）
-- 任何等級都一字不改：程式碼、路徑、指令和參數、錯誤訊息、測試名稱、數字和單位，以及 `STATUS:`／`PHASE:`／`DONE` 這類固定格式行
-- 改回完整句子的情況：安全或權限風險、不可逆的動作、刪除資料、要使用者決定或釐清的問題
+How terse to be depends on the reader:
+- **Lite** (replies to the user): answer first; no greetings, no pleasantries, no restating the question, no announcing "next I will…"; keep full sentences, and give a plain-language explanation the first time a term appears
+  - No repetition within one reply: before a tool call write only one sentence on what you are about to do, without stating the conclusion first; after the tool write only the new results, never restating what was said before the tool
+  - Exceptions (written as usual, not counted as announcing or restating): the one-sentence note before running a command the user didn't ask for (skill `route`, "Interacting with the user"), the approach and progress notes a background session is required to give, and the first sentence of a background session's reply naming what the user asked
+- **Full** (subagent reports, a headless worker's orchestration text, messages written to another agent): Lite plus: fragments are fine, one fact per sentence, `→` for cause and effect; in English, drop articles and pleasantries
+- **Uncompressed**: commit messages, PR descriptions, a plan's decision table, DESIGN / TODO / README, and any other record people read over the long term
+- Never altered at any level: code, paths, commands and arguments, error messages, test names, numbers and units, and fixed-format lines such as `STATUS:` / `PHASE:` / `DONE`
+- Switch back to full sentences for: security or permission risks, irreversible actions, deleting data, questions the user must decide or clarify
 
-## 工具
+## Tools
 
-- 讀檔用 Read（大檔用 offset／limit），修改用 Edit／Write；Bash 用來執行測試、git、腳本，以及搜尋
-  - 原因：Bash 讀檔常被 sandbox 擋下（例如 `plans/`、`~/.claude`），失敗後要重試；複合的 `cd` 指令會觸發權限確認、中斷 auto mode；用 Bash 讀過的檔案 Edit 追蹤不到，要再讀一次
-  - 過濾指令輸出可以用 Bash（例如 `<測試指令> | grep -E "..."`）
-- 搜尋：有 Grep／Glob 工具就用（Windows、npm 版）；沒有時（Linux／macOS 原生版 v2.1.117 起移除，改由 Bash 內嵌 ugrep／bfs）用 Bash `grep`／`rg`／`find`
-  - 一次一個指令，不用 `&&`、`;` 串接（複合指令會被權限或分類器擋下）
-  - 控制輸出量：`grep -l`、`grep -m <n>`、`| head`；看檔案某段用 Read，不用 `sed -n`／`cat`
-- Bash 指令不要用 `cd <路徑>;` 或 `cd <路徑> &&` 開頭：工作目錄已經是當前 checkout；需要其他目錄時用絕對路徑、`git -C <路徑>` 或 `env -C <路徑> <指令>`（`bash-guard` hook 擋）
-- Bash／Monitor 不帶 `allowed_domains` 參數（`autoMode.hard_deny` 一律擋）；專案網域由使用者審核後加進 repo 的 `.claude/settings.json` `sandbox.network.allowedDomains`。指令被擋時先分辨是哪一層：權限分類器拒絕，還是 `<sandbox_violations>` 列出的網域；缺網域就告訴使用者，不自己開
-- Bash 看不到也寫不進 `plans/`（sandbox）；plan 一律用 Read／Write 工具
-- 暫存檔一律放 `$TMPDIR/<topic>/` 子目錄（`<topic>` 用 branch 主題或這次工作的名稱），不直接放 `$TMPDIR` 第一層；用 Bash 讀寫（`cat`、heredoc、重導向、小腳本）：Write／Edit 只能寫專案內（hook 擋），Read 也讀不到（`permissions.blockReadsOutsideWorkingDirectories`）
-  - 原因：sandbox 的 `$TMPDIR`（`/tmp/claude-1000`）是所有 session 共用的（規劃 session、worker、其他 session），第一層的通用檔名（`SKILL.md`、`pyproject.toml`）會互相覆蓋
-- hook 的狀態在 checkout 根目錄的 `.hook-only/`，只有 hook 能寫；Read 和 Bash 都可以讀（`hook-read-only/` 子目錄除外）
-- 例外：`~/.claude/skills/`、`~/.claude/templates/`、`~/.claude/docs/` 的檔案（skill 的參考檔、範本、文件）在工作目錄外，Read 讀不到，改用 Bash `cat`（sandbox 已開放讀取）
+- Read files with Read (offset / limit for large files), change them with Edit / Write; Bash is for running tests, git, scripts, and searching
+  - Why: reading files with Bash is often blocked by the sandbox (e.g. `plans/`, `~/.claude`) and has to be retried after failing; a compound `cd` command triggers a permission prompt, which interrupts auto mode; Edit can't track a file read with Bash, so it has to be read again
+  - Filtering command output with Bash is fine (e.g. `<test command> | grep -E "..."`)
+- Search: use the Grep / Glob tools when they exist (Windows, npm build); without them (removed from the Linux / macOS native build since v2.1.117, replaced by ugrep / bfs embedded in Bash) use Bash `grep` / `rg` / `find`
+  - One command at a time, not chained with `&&` or `;` (compound commands get blocked by permissions or the classifier)
+  - Limit the output: `grep -l`, `grep -m <n>`, `| head`; to see part of a file use Read, not `sed -n` / `cat`
+- Never start a Bash command with `cd <path>;` or `cd <path> &&`: the working directory is already the current checkout; for another directory use absolute paths, `git -C <path>` or `env -C <path> <command>` (the `bash-guard` hook blocks it)
+- Bash / Monitor never take the `allowed_domains` parameter (`autoMode.hard_deny` always blocks it); project domains are added, after the user reviews them, to the repo's `.claude/settings.json` `sandbox.network.allowedDomains`. When a command is blocked, first tell which layer it was: a permission-classifier denial, or a domain listed in `<sandbox_violations>`; for a missing domain tell the user, never open it yourself
+- Bash can neither see nor write `plans/` (sandbox); plans always go through the Read / Write tools
+- Temporary files always go in a `$TMPDIR/<topic>/` subdirectory (`<topic>`: the branch topic or the name of this piece of work), never directly in the top level of `$TMPDIR`; read and write them with Bash (`cat`, heredoc, redirection, small scripts): Write / Edit can only write inside the project (a hook blocks the rest), and Read can't read them either (`permissions.blockReadsOutsideWorkingDirectories`)
+  - Why: the sandbox's `$TMPDIR` (`/tmp/claude-<uid>`) is shared by every session (planning session, workers, other sessions), and generic file names at its top level (`SKILL.md`, `pyproject.toml`) overwrite each other
+- Hook state is in `.hook-only/` at the checkout root; only hooks can write it; both Read and Bash can read it (except its `hook-read-only/` subdirectory)
+- Exception: the files in `~/.claude/skills/`, `~/.claude/templates/` (skill reference files, templates) are outside the working directory, where Read can't reach them; use Bash `cat` instead (the sandbox allows reading them)
 
 ## Git
 
-- 一律用明確路徑 `git add`，不用 `git add -A`／`git add .`
-- PR 模式不自動 merge，PR 等人工審核；repo 的 `.claude/settings.json` 設 `FLOW_INTEGRATION=local`（本機模式）時，本機 main 是準，worker 結束在 `STATUS: done` 後由 hook（`auto-merge.py`）在所有條件成立時 merge 進本機 main，人只核准 plan；agent 自己永遠不 merge
-- 使用者在自己終端機做完 git 操作（fetch、rebase、push）後，用 `git log` 確認 ref 確實更新
-- Branch 格式固定三段：`<類型>/<範圍>/<主題>`
-  - 類型：`feature`（新功能、重構、文件、工具、調查）或 `fix`（單一 bug 修正，走簡化流程）
-  - 範圍：只能從專案 `CLAUDE.md` 的範圍表選一個；跨多個範圍時選改動最多的；需要新範圍先問使用者
-  - 主題：英文 kebab-case，2–4 個字；`plans/<主題>.md` 用同一個名稱
-  - 例外：新 repo 還沒有範圍表時，第一個 branch 固定是 `feature/docs/repo-init`
-- `plans/` 加入 `.gitignore`，不 commit；需要長期保留的決定寫進專案文件（DESIGN、TODO）和 PR 描述
+- Always `git add` explicit paths, never `git add -A` / `git add .`
+- PR mode never merges automatically; PRs wait for human review. In local mode (`wt local on`, recorded in the main checkout's `.hook-only/flow-mode`; `python3 ~/.claude/config/homeconfig.py flow-mode` prints the current checkout's mode) the local main is the source of truth: after a worker ends with `STATUS: done`, a hook (`auto-merge.py`) merges it into the local main when every condition holds, and people approve only the plan; an agent itself never merges
+- After the user runs git operations in their own terminal (fetch, rebase, push), confirm with `git log` that the refs really moved
+- The branch format is fixed at three parts: `<type>/<scope>/<topic>`
+  - Type: `feature` (new feature, refactor, docs, tooling, investigation) or `fix` (a single bug fix, which takes the simplified flow)
+  - Scope: exactly one from the scope table in the project `CLAUDE.md`; when the change spans several scopes, the one with the most changes; for a new scope, ask the user first
+  - Topic: English kebab-case, 2–4 words; `plans/<topic>.md` uses the same name
+  - Exception: in a new repo with no scope table yet, the first branch is always `feature/docs/repo-init`
+- `plans/` is added to `.gitignore` and never committed; decisions that must be kept long-term go into the project docs (DESIGN, TODO) and the PR description
 
-## 角色
+## Roles
 
-- **入口**：主 session 一律先載入 skill `route`（它的「與使用者互動」整個 session 都適用）：第一則訊息是 `/` 指令或 `wt` 指令時，載入後照原樣執行那個指令；其他訊息照 `route` 的表判斷情境、載入對應的 playbook；換成另一種工作時回到 `route` 的表。subagent 和 headless worker 不載入
-- **規劃 session**：主 checkout，`/repo-plan` 和使用者討論、開 worktree；`/finish-worktree` 收尾
-- **指揮 session**：worktree 中執行 `/feature-flow <主題>`，派 subagent、驗證、commit
-- **subagent**：qa-planner、spec-reviewer、qa、developer、code-reviewer。只做被指派的事，依預算回報；共通規則見 skill `agent-common`
-- **verifier**：worker 結束後由 hook 開（skill `verify-topic` fork），對照核准的 plan 在真實資料上判斷結果；指揮叫不到它
+- **Entry**: the main session always loads skill `route` first (its "Interacting with the user" applies for the whole session): when the first message is a `/` command or a `wt` command, load it and then run that command as typed; for any other message, judge the situation from `route`'s table and load the matching playbook; when switching to another kind of work, go back to `route`'s table. Subagents and headless workers don't load it
+- **Planning session**: the main checkout; `/repo-plan` discusses with the user and opens worktrees; `/finish-worktree` wraps up
+- **Orchestrator session**: runs `/feature-flow <topic>` in a worktree; dispatches subagents, verifies, commits
+- **subagent**: qa-planner, spec-reviewer, qa, developer, code-reviewer. Does only what it is assigned and reports according to its budget; shared rules in skill `agent-common`
+- **verifier**: started by a hook after the worker ends (skill `verify-topic` fork); judges the result against the approved plan on real data; the orchestrator can't call it
 
-## 原則
+## Principles
 
-- **先找根本原因，做長期最佳**：遇到問題先找出根本原因，再選長期最佳的做法，不挑最快讓症狀消失或讓眼前檢查通過的做法
-  - 長期最佳的做法太大就拆成階段，不降級成短期解；每個階段做完都要能單獨停在那裡而不帶風險（安全、資料、對外不可逆、錯誤結果、日後被迫重寫）
-  - 設計保持彈性與可延伸性：後續階段從預留的擴充點接上，不用推翻前一階段
-  - 只繞過症狀的做法只能是明說的暫時措施，同時寫下根本原因和之後的正解
-  - 一個做法撐不住時，回頭檢查原因，不往上疊補丁或加資源硬撐
-- **兩次修法失敗就驗證前提**：兩個以上的修法建立在同一個前提上卻都失敗，先寫下那個前提、直接驗證它，再寫下一個修法
-- **數字先解釋再用**：測到的數字（耗時、速度、成本、結果比例）在回報或據以行動前，先確認它量的是你以為的東西、是什麼限制了它，以及同一次測量裡有沒有不該出現的結果
-- **能測就測，測決定和數字，不測像素**
-- 一定要成立的規則用 hook、sandbox、settings 強制；說明文字只用來解釋
-- 數值放設定檔或資源，不寫死
-- 邏輯和表現分離；邏輯不依賴 UI／場景樹，時間來源以注入方式提供
+- **Find the root cause, do the long-term best**: on a problem, first find its root cause, then choose the long-term best approach, not the one that makes the symptom go away fastest or gets the check at hand to pass
+  - A long-term best approach that is too big is split into stages, never downgraded to a short-term fix; every stage, once done, must be able to stop there on its own without risk (security, data, irreversible external effects, wrong results, a forced rewrite later)
+  - Keep designs flexible and extensible: later stages plug into extension points left for them, without overturning the earlier stage
+  - An approach that only works around the symptom may only be an explicitly stated temporary measure, written down together with the root cause and the proper fix to come
+  - When an approach can't hold, go back and examine the cause; never stack patches on it or prop it up with more resources
+- **Risk can veto a design, never a requirement**: a requirement is not the source of risk, the design is; safety rules are conditions a design must meet, not reasons to veto a requirement. When a design is risky, don't patch the original design: complete it, or think up an entirely new design from scratch; only when several rounds of designs still can't produce an acceptable one, apologise and say it is beyond your ability, list the designs tried and where each got stuck, and ask the requester whether the requirement can be adjusted (the main session asks the user; a subagent reports to whoever dispatched it, who passes the question on). When a requirement conflicts with another requirement, state the conflict clearly at once and let the requester decide the trade-off
+- **Two failed fixes → verify the premise**: when two or more fixes built on the same premise have all failed, first write that premise down and verify it directly, then write the next fix
+- **Explain a number before using it**: before reporting or acting on a measured number (duration, speed, cost, a result ratio), first confirm that it measures what you think it does, what limited it, and whether the same measurement contains results that shouldn't be there
+- **Test what can be tested; test decisions and numbers, not pixels**
+- Rules that must always hold are enforced with hooks, the sandbox or settings; text only explains
+- Values go in config files or resources, never hard-coded
+- Keep logic and presentation separate; logic doesn't depend on the UI / scene tree, and the time source is injected
 
-## 流程規則在哪裡
+## Where the flow rules live
 
-| 內容 | 位置 |
+| Content | Location |
 |---|---|
-| 情境判斷：入口、各情境的 playbook（問答、除錯、驗證、查證、改 home、直接修改）、共用操作；主 session 和使用者互動的規則 | skill `route`（「與使用者互動」、`playbooks/`、`ops/`） |
-| 規劃：分類、計畫格式、討論紀錄、開局、worktree 交接、規劃時的踩坑 | skill `repo-plan` |
-| 開發：各類別的步驟、派工與預算、必修 vs TODO、成本表與踩坑紀錄、收尾 | skill `feature-flow` |
-| 收尾：整理成本與踩坑、經驗紀錄、移除 worktree | skill `finish-worktree` |
-| subagent 共通：預算與求助、測試範圍、回報格式 | skill `agent-common` |
-| 程式碼品質（需要判斷的部分：命名、重複、死碼、註解、錯誤處理）；數字門檻在 crap-gate | skill `clean-code`（developer、code-reviewer 預載） |
-| 專案專屬：測試指令、受保護路徑、完成檢查 | 專案 skill `project-flow` |
-| hook 的設計（agent-guard、`.hook-only/`、預算、消耗量） | `~/.claude/docs/` |
-| PR 衝突：檢查、交給 worker 合併 | skill pr-conflict、feature-flow merge.md |
+| Situation routing: the entry, each situation's playbook (questions, debugging, verification, research, home changes, direct changes), shared operations; the rules for how the main session works with the user | skill `route` ("Interacting with the user", `playbooks/`, `ops/`) |
+| Planning: classes, plan format, discussion record, kickoff, worktree hand-off, planning pitfalls | skill `repo-plan` |
+| Development: each class's steps, dispatch and budgets, must-fix vs TODO, cost table and pitfall log, wrap-up | skill `feature-flow` |
+| Wrap-up: sorting out costs and pitfalls, the lessons record, removing the worktree | skill `finish-worktree` |
+| Shared subagent rules: budgets and asking for help, test scope, report format | skill `agent-common` |
+| Refactoring: lock today's behaviour first, compare new and old case by case over generated inputs, removed-behaviour table, bugs found are only recorded | skill `refactor` (preloaded by home-drafter; a repo's developer loads it only when needed) |
+| Code quality (the parts that need judgement: naming, duplication, dead code, comments, error handling); the numeric thresholds are in crap-gate | skill `clean-code` (preloaded by developer, code-reviewer) |
+| Project-specific: test commands, protected paths, completion checks | project skill `project-flow` |
+| PR conflicts: checking, handing the merge to a worker | skill pr-conflict, feature-flow merge.md |

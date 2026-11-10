@@ -1,10 +1,10 @@
-"""Budget headroom and gate-wait reserve (2026-11-01): subagent-budget.py, dispatch-guard.py,
+"""Budget headroom and gate-wait reserve: subagent-budget.py, dispatch-guard.py,
 worker-control.py and cost-history.py estimate.
 
 Run: uv run --offline --no-project --with pytest python -m pytest ~/.claude/hooks/tests/test_budget.py
 The hooks run as subprocesses on a temporary git repo; HOME points at a temporary home whose
 ~/.claude/hooks and ~/.claude/skills/repo-plan link to the files under test, because the hooks find
-cost-history.py, run-worker.sh and budget-defaults.json under ~.
+cost-history.py and run-worker.sh under ~ (the home settings through homeconfig, next to the hooks).
 """
 import json
 import math
@@ -15,11 +15,21 @@ import time
 
 import pytest
 
+import config_fixtures
+
 HOOKS = os.environ.get("QG_HOOKS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SKILLS = os.path.join(os.path.dirname(HOOKS), "skills")
+sys.path.insert(0, os.path.join(HOOKS, "lib"))
+import homepath  # noqa: E402,F401  (the tree under test: config/ and the hooks/ role directories)
+import homeconfig  # noqa: E402
+import runstate  # noqa: E402
+
+DEFAULTS = homeconfig.load("budget")
+HEADROOM = DEFAULTS["budget_headroom_factor"]
+# Programs run from the session's clean copy of the tree (config_fixtures.cleanHome): the person's files in the
+# tree under test never change a result.
+RUN_HOOKS = os.path.join(config_fixtures.cleanHome(), "hooks")
+SKILLS = os.path.join(config_fixtures.cleanHome(), "skills")
 COST_HISTORY = os.path.join(SKILLS, "repo-plan", "cost-history.py")
-DEFAULTS = json.load(open(os.path.join(HOOKS, "budget-defaults.json"), encoding="utf-8"))
-HEADROOM = DEFAULTS["budget_headroom"]
 COLUMNS = ["date", "topic", "branch", "class", "agent", "round", "estTok", "actTok",
 	"estMin", "actMin", "estUsd", "actUsd", "note"]
 
@@ -29,7 +39,7 @@ def home(tmp_path):
 	"""A home whose ~/.claude/hooks and ~/.claude/skills point at the files under test."""
 	h = tmp_path / "home"
 	(h / ".claude").mkdir(parents=True)
-	os.symlink(HOOKS, h / ".claude" / "hooks")
+	os.symlink(RUN_HOOKS, h / ".claude" / "hooks")
 	os.symlink(SKILLS, h / ".claude" / "skills")
 	return h
 
@@ -40,6 +50,16 @@ def gitRepo(path):
 	return path
 
 
+def gitWorktree(main, worktree):
+	"""main as a git repository with one commit and worktree as its linked worktree: homeconfig.flowMode finds
+	the topic's and the main checkout's records through git."""
+	gitRepo(main)
+	for args in (["commit", "-q", "--allow-empty", "-m", "x"], ["worktree", "add", "-q", "-b", f"wt-{worktree.name}",
+			str(worktree)]):
+		subprocess.run(["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t", *args], check=True,
+			capture_output=True)
+
+
 def env(home, **extra):
 	out = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_")}
 	out.update({"HOME": str(home), **extra})
@@ -47,7 +67,7 @@ def env(home, **extra):
 
 
 def hook(name, data, home, **extra):
-	result = subprocess.run([sys.executable, os.path.join(HOOKS, name)], input=json.dumps(data),
+	result = subprocess.run([sys.executable, os.path.join(RUN_HOOKS, "hook-entry.py"), "check", name.removesuffix(".py")], input=json.dumps(data),
 		capture_output=True, text=True, env=env(home, **extra))
 	return result.stdout.strip(), result.stderr
 
@@ -101,6 +121,52 @@ def test_subagent_budget_stops_at_the_headroom(tmp_path, home):
 	assert json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"].startswith("Budget used up")
 
 
+def markGateWait(repo, minutesAgo, maxMinutes):
+	path = repo / ".hook-only" / "budget" / "a1.json"
+	state = json.loads(path.read_text())
+	since = time.time() - minutesAgo * 60
+	state["hook_wait"] = {"since": since, "what": "mutation scan", "max_seconds": maxMinutes * 60}
+	path.write_text(json.dumps(state))
+	return since
+
+
+def hookWaitEvents(repo):
+	path = repo / ".hook-only" / "budget" / "events.jsonl"
+	return [e for e in map(json.loads, path.read_text().splitlines()) if e["event"] == "HookWait"] if path.exists() else []
+
+
+def test_subagent_budget_takes_a_cancelled_gates_hold_off_the_clock(tmp_path, home):
+	# 40 min on a 10 min budget, 35 of them held by a gate Claude Code cancelled at its 30 min timeout
+	repo = gitRepo(tmp_path / "repo")
+	budgetState(repo, 40)
+	markGateWait(repo, 35, 30)
+	out, err = hook("subagent-budget.py", preToolUse(repo), home)
+	assert not denied(out), (out, err)
+	assert "hook_wait" not in json.loads((repo / ".hook-only" / "budget" / "a1.json").read_text())
+	assert [round(e["seconds"]) for e in hookWaitEvents(repo)] == [1800]
+
+
+def test_subagent_budget_leaves_a_hold_younger_than_its_timeout(tmp_path, home):
+	repo = gitRepo(tmp_path / "repo")
+	budgetState(repo, 40)
+	markGateWait(repo, 5, 30)
+	out, _ = hook("subagent-budget.py", preToolUse(repo), home)
+	assert denied(out)  # a parallel call's gate may still hold; nothing excluded yet
+	assert "hook_wait" in json.loads((repo / ".hook-only" / "budget" / "a1.json").read_text())
+
+
+def test_subagent_stop_logs_the_wait_a_cancelled_gate_left(tmp_path, home):
+	repo = gitRepo(tmp_path / "repo")
+	budgetState(repo, 20)
+	since = markGateWait(repo, 5, 30)
+	hook("subagent-budget.py", {"hook_event_name": "SubagentStop", "agent_id": "a1", "agent_type": "qa",
+		"cwd": str(repo), "session_id": "s"}, home)
+	assert not (repo / ".hook-only" / "budget" / "a1.json").exists()
+	events = hookWaitEvents(repo)
+	assert len(events) == 1 and 290 <= events[0]["seconds"] <= 330
+	assert events[0]["t"] == time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(since))
+
+
 # dispatch-guard.py: the gate wait is reserved in the worker run's time
 
 def workerRepo(tmp_path, gates=True, minutesAgo=30):
@@ -128,6 +194,19 @@ def test_dispatch_guard_reserves_the_mutation_wait_for_a_review(tmp_path, home):
 		CLAUDE_WORKER_MINUTES="40")
 	assert denied(out), err
 	assert "12.4 min for its quality gate's wait" in json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize("remaining,deny", [(1.2, True), (5, False)])
+def test_dispatch_guard_checks_the_usd_against_the_newest_budget_usd_attachment(tmp_path, home, remaining, deny):
+	repo = workerRepo(tmp_path, gates=False)  # 10 min left: the minutes fit
+	transcript = tmp_path / "session.jsonl"
+	attachment = lambda left: json.dumps({"type": "attachment", "attachment": {"type": "budget_usd", "remaining": left}})
+	transcript.write_text("\n".join([attachment(0.1), attachment(None), attachment(remaining)]) + "\n")
+	data = {**dispatch(repo, "qa", "Budget: 5 min, $1"), "transcript_path": str(transcript)}
+	out, err = hook("dispatch-guard.py", data, home, CLAUDE_WORKER_MINUTES="40")
+	assert denied(out) == deny, (out, err)  # $1 + the $0.5 margin against what is left
+	state = json.loads((repo / ".hook-only" / "hook-read-only" / "usage" / "dispatch-main.json").read_text())
+	assert state["latest"]["remaining"] == remaining
 
 
 def mergeHead(repo):
@@ -264,7 +343,7 @@ def test_estimate_agent_has_no_floor(tmp_path, home):
 
 def test_estimate_agent_uses_only_the_last_window_of_rounds(tmp_path, home):
 	repo = gitRepo(tmp_path / "main")
-	window = DEFAULTS["estimate_window"]
+	window = DEFAULTS["estimate_window_count"]
 	# newest first in the file is oldest first: the 9 is one round past the window and drops out
 	writeHistory(repo, [devRow(10, 9)] + [devRow(10, 7)] * window)
 	result = costHistory(repo, home, "estimate", "agent", "developer", "1", "10")
@@ -289,15 +368,15 @@ def test_a_resume_after_a_checkpoint_is_never_below_the_raw_estimate(tmp_path, h
 	assert wrong.returncode != 0 and "--resume only goes with estimate agent" in wrong.stderr
 
 
-# worker-control.py: the limits sit budget_headroom above the estimate
+# worker-control.py: the limits sit budget_headroom_factor above the estimate
 
 def test_worker_control_passes_the_limits_and_records_the_estimate(tmp_path):
 	home = tmp_path / "home"
-	hooks = home / ".claude" / "hooks"
+	hooks = home / ".claude" / "hooks" / "worker"
 	hooks.mkdir(parents=True)
-	(hooks / "budget-defaults.json").write_text(json.dumps(DEFAULTS))
 	argsFile = tmp_path / "args.txt"
-	(hooks / "run-worker.sh").write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {argsFile}\n")
+	(hooks / "run-worker.sh").write_text(
+		f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {argsFile}.part\nmv {argsFile}.part {argsFile}\n")
 	(hooks / "run-worker.sh").chmod(0o755)
 	main = tmp_path / "proj" / "main"
 	(main / "plans" / "worker").mkdir(parents=True)
@@ -306,7 +385,7 @@ def test_worker_control_passes_the_limits_and_records_the_estimate(tmp_path):
 	worktree = tmp_path / "proj" / "worktrees" / "t"
 	worktree.mkdir(parents=True)
 	(worktree / ".git").write_text("gitdir: x\n")
-	result = subprocess.run([sys.executable, os.path.join(HOOKS, "worker-control.py")],
+	result = subprocess.run([sys.executable, os.path.join(RUN_HOOKS, "worker", "worker-control.py")],
 		input=json.dumps({"prompt": "wt launch t", "cwd": str(main)}), capture_output=True, text=True,
 		env=env(home))
 	assert result.returncode == 0, result.stderr
@@ -346,11 +425,11 @@ SESSION = "12345678-1234-1234-1234-123456789abc"
 def stoppedRun(tmp_path):
 	"""(home, main, worktree, args file): run 1 ended `STATUS: blocked` after a dispatch-guard denial."""
 	home = tmp_path / "home"
-	hooks = home / ".claude" / "hooks"
+	hooks = home / ".claude" / "hooks" / "worker"
 	hooks.mkdir(parents=True)
-	(hooks / "budget-defaults.json").write_text(json.dumps(DEFAULTS))
 	argsFile = tmp_path / "args.txt"
-	(hooks / "run-worker.sh").write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {argsFile}\n")
+	(hooks / "run-worker.sh").write_text(
+		f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {argsFile}.part\nmv {argsFile}.part {argsFile}\n")
 	(hooks / "run-worker.sh").chmod(0o755)
 	main = tmp_path / "proj" / "main"
 	(main / "plans" / "worker").mkdir(parents=True)
@@ -359,18 +438,35 @@ def stoppedRun(tmp_path):
 	runs = worktree / ".hook-only" / "runs"
 	runs.mkdir(parents=True)
 	(worktree / ".git").write_text("gitdir: x\n")
+	runstate.launchRecord(str(worktree), 1, {"topic": "t", "started_by": "person", "purpose": "build", "flow": "written",
+		"launch": {"launched_at": "2026-11-01T09:59:00+08:00"}})
 	(runs / "start-1").write_text("2026-11-01T10:00:00+08:00\n")
-	(runs / "result-1.json").write_text(json.dumps({"result": "STATUS: blocked\nno room for qa"}))
+	process = {"wrapper_pid": 2**22 + 7, "started_at": "2026-11-01T10:00:00+08:00"}  # the state's pid: gone
+	runstate.update(str(worktree), 1, lambda r: r.update(process=process))
+	endClaude(worktree, "STATUS: blocked\nno room for qa")
 	(runs / "auto-resume-1.json").write_text(json.dumps({"minutes": 11, "usd": 1.9}))
+	runstate.recordDispatchStop(str(worktree), 1, 11, 1.9)
 	(main / ".hook-only" / "workers").mkdir(parents=True)
 	(main / ".hook-only" / "workers" / "t.json").write_text(json.dumps({"pid": 2 ** 22 + 7, "session_id": SESSION,
 		"run": 1, "worktree": str(worktree)}))
 	return home, main, worktree, argsFile
 
 
+def endClaude(worktree, text, **extra):
+	"""run-worker.sh's end of claude: result-1.json, then the record's claude part read from it (dual write)."""
+	(worktree / ".hook-only" / "runs" / "result-1.json").write_text(json.dumps({"result": text, **extra}))
+	runstate.recordClaudeEnded(str(worktree), 1, 0, False)
+
+
+def recordedFile(worktree, name, data, step):
+	"""A wrap-up program's result file of run 1 and the record's step read back from it (dual write)."""
+	(worktree / ".hook-only" / "runs" / name).write_text(json.dumps(data))
+	runstate.recordStepFromFile(str(worktree), 1, step)
+
+
 def auto(project):
 	home, main, worktree, _ = project
-	result = subprocess.run([sys.executable, os.path.join(HOOKS, "worker-control.py"), "auto", str(worktree), "t", "1"],
+	result = subprocess.run([sys.executable, os.path.join(RUN_HOOKS, "worker", "worker-control.py"), "auto", str(worktree), "t", "1"],
 		capture_output=True, text=True, env=env(home, WT_MAIN_DIR=str(main)))
 	assert result.returncode == 0, result.stderr
 	return json.loads((worktree / ".hook-only" / "runs" / "auto-1.json").read_text())
@@ -416,9 +512,10 @@ def test_auto_resume_refuses(stoppedRun, change, reason):
 		(worktree / ".hook-only" / "agent-guard").mkdir(parents=True)
 		(worktree / ".hook-only" / "agent-guard" / "HOLD").write_text("x")
 	elif change == "status":
-		(runs / "result-1.json").write_text(json.dumps({"result": "STATUS: needs-decision\nwhich rule?"}))
+		endClaude(worktree, "STATUS: needs-decision\nwhich rule?")
 	elif change == "stopped":
 		(runs / "stopped-1").write_text("x")
+		runstate.recordStop(str(worktree), 1, "person")
 	elif change == "expensive":
 		(runs / "auto-resume-1.json").write_text(json.dumps({"minutes": 11, "usd": DEFAULTS["worker_auto_resume_max_usd"] + 1}))
 	elif change == "nousd":
@@ -432,16 +529,15 @@ def test_auto_resume_refuses(stoppedRun, change, reason):
 def behindMain(stoppedRun):
 	"""Run 1 ended STATUS: done and auto-merge.py asked for a merge run."""
 	home, main, worktree, argsFile = stoppedRun
-	runs = worktree / ".hook-only" / "runs"
-	(runs / "result-1.json").write_text(json.dumps({"result": "STATUS: done\nall green"}))
-	(runs / "merge-1.json").write_text(json.dumps({"run": 1, "decision": "refused", "merge_run": True,
-		"reason": "the branch doesn't contain main: a merge run is needed first"}))
+	endClaude(worktree, "STATUS: done\nall green")
+	recordedFile(worktree, "merge-1.json", {"run": 1, "decision": "refused", "merge_run": True,
+		"reason": "the branch doesn't contain main: a merge run is needed first"}, "merge")
 	return stoppedRun
 
 
 def autoMergeRun(project):
 	home, main, worktree, _ = project
-	result = subprocess.run([sys.executable, os.path.join(HOOKS, "worker-control.py"), "auto-merge", str(worktree), "t", "1"],
+	result = subprocess.run([sys.executable, os.path.join(RUN_HOOKS, "worker", "worker-control.py"), "auto-merge", str(worktree), "t", "1"],
 		capture_output=True, text=True, env=env(home, WT_MAIN_DIR=str(main)))
 	assert result.returncode == 0, result.stderr
 	return json.loads((worktree / ".hook-only" / "runs" / "auto-1.json").read_text())
@@ -478,9 +574,10 @@ def test_auto_merge_run_refuses(stoppedRun, change, reason):
 		(worktree / ".hook-only" / "agent-guard").mkdir(parents=True)
 		(worktree / ".hook-only" / "agent-guard" / "HOLD").write_text("x")
 	elif change == "asked":
-		(runs / "merge-1.json").write_text(json.dumps({"run": 1, "decision": "refused", "reason": "red suite"}))
+		recordedFile(worktree, "merge-1.json", {"run": 1, "decision": "refused", "reason": "red suite"}, "merge")
 	elif change == "stopped":
 		(runs / "stopped-1").write_text("x")
+		runstate.recordStop(str(worktree), 1, "person")
 	decision = autoMergeRun(stoppedRun)
 	assert decision["decision"] == "refused" and reason in decision["reason"]
 	time.sleep(0.3)
@@ -491,7 +588,7 @@ def test_a_resume_typed_by_the_user_resets_the_count(stoppedRun):
 	home, main, worktree, argsFile = stoppedRun
 	stateFile = main / ".hook-only" / "workers" / "t.json"
 	stateFile.write_text(json.dumps({**json.loads(stateFile.read_text()), "auto_resumes": 1}))
-	result = subprocess.run([sys.executable, os.path.join(HOOKS, "worker-control.py")],
+	result = subprocess.run([sys.executable, os.path.join(RUN_HOOKS, "worker", "worker-control.py")],
 		input=json.dumps({"prompt": "wt resume t", "cwd": str(main)}), capture_output=True, text=True, env=env(home))
 	assert result.returncode == 0, result.stderr
 	waitForArgs(argsFile)
@@ -512,9 +609,17 @@ def test_auto_resume_gets_what_is_left_of_the_estimate(stoppedRun):
 	runs = worktree / ".hook-only" / "runs"
 	(runs / "est-1.json").write_text(json.dumps({"minutes": 40, "usd": 4}))
 	start = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(time.time() - 10 * 60))
-	(runs / "start-1").write_text(start[:-2] + ":" + start[-2:] + "\n")
-	(runs / "result-1.json").write_text(json.dumps({"result": "STATUS: blocked\nno room", "total_cost_usd": 1.5,
-		"session_id": SESSION}))
+	start = start[:-2] + ":" + start[-2:]
+	(runs / "start-1").write_text(start + "\n")
+	endClaude(worktree, "STATUS: blocked\nno room", total_cost_usd=1.5, session_id=SESSION)
+	call = {"k": 0, "kind": "main", "file": "result-1.json", "started_at": start, "ended_at": start, "exit_code": 0,
+		"cost_usd": 1.5}
+
+	def asRun(record):  # the record of the same run: its estimate, its wrapper's start, its spend
+		record.update(estimate={"minutes": 40, "usd": 4}, process={"started_at": start})
+		record["claude"]["invocations"] = [call]
+
+	runstate.update(str(worktree), 1, asRun)
 	decision = auto(stoppedRun)
 	assert decision["decision"] == "resume"
 	assert decision["minutes"] == 30 and decision["usd"] == 2.5
@@ -522,43 +627,46 @@ def test_auto_resume_gets_what_is_left_of_the_estimate(stoppedRun):
 	assert args[5] == str(math.ceil(30 * HEADROOM))
 
 
-# worker-control.py: a topic keeps the flow mode it was launched in (`wt local on|off`, 2026-11-01)
+# worker-control.py: a topic keeps the flow mode it was launched in (`wt local on|off`)
 
-def launchTopic(tmp_path, **extra):
+def launchTopic(tmp_path, mainRecord=None, topicRecord=None, **extra):
+	"""`wt launch t` through worker-control.py; the main checkout's and the topic's flow-mode records first, if given."""
 	home = tmp_path / "home"
-	hooks = home / ".claude" / "hooks"
+	hooks = home / ".claude" / "hooks" / "worker"
 	hooks.mkdir(parents=True)
-	(hooks / "budget-defaults.json").write_text(json.dumps(DEFAULTS))
 	argsFile = tmp_path / "args.txt"
-	(hooks / "run-worker.sh").write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {argsFile}\n")
+	(hooks / "run-worker.sh").write_text(
+		f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {argsFile}.part\nmv {argsFile}.part {argsFile}\n")
 	(hooks / "run-worker.sh").chmod(0o755)
 	main = tmp_path / "proj" / "main"
 	(main / "plans" / "worker").mkdir(parents=True)
 	(main / "plans" / "worker" / "t.json").write_text(json.dumps({"minutes": 40, "est_usd": 4}))
 	worktree = tmp_path / "proj" / "worktrees" / "t"
-	worktree.mkdir(parents=True, exist_ok=True)
-	(worktree / ".git").write_text("gitdir: x\n")
-	result = subprocess.run([sys.executable, os.path.join(HOOKS, "worker-control.py")],
+	gitWorktree(main, worktree)
+	for checkout, mode in ((main, mainRecord), (worktree, topicRecord)):
+		if mode:
+			(checkout / ".hook-only").mkdir(exist_ok=True)
+			(checkout / ".hook-only" / "flow-mode").write_text(mode + "\n")
+	result = subprocess.run([sys.executable, os.path.join(RUN_HOOKS, "worker", "worker-control.py")],
 		input=json.dumps({"prompt": "wt launch t", "cwd": str(main)}), capture_output=True, text=True,
 		env=env(home, **extra))
 	assert result.returncode == 0, result.stderr
 	return worktree, result.stdout
 
 
-@pytest.mark.parametrize("extra,mode", [({}, "origin"), ({"FLOW_INTEGRATION": "local"}, "local")])
-def test_launch_records_the_topic_flow_mode(tmp_path, extra, mode):
-	worktree, out = launchTopic(tmp_path, **extra)
-	assert (worktree / ".hook-only" / "flow-mode").read_text().strip() == mode
-	assert ("local mode" in out) == (mode == "local")
+def test_launch_records_the_topic_flow_mode(tmp_path, flowMode):
+	worktree, out = launchTopic(tmp_path, mainRecord=flowMode)
+	assert (worktree / ".hook-only" / "flow-mode").read_text().strip() == flowMode
+	assert ("local mode" in out) == (flowMode == "local")
 
 
-def test_a_recorded_flow_mode_is_never_rewritten_by_launch(tmp_path):
-	worktree = tmp_path / "proj" / "worktrees" / "t"
-	(worktree / ".hook-only").mkdir(parents=True)
-	(worktree / ".hook-only" / "flow-mode").write_text("origin\n")
-	_, out = launchTopic(tmp_path, FLOW_INTEGRATION="local")
-	assert (worktree / ".hook-only" / "flow-mode").read_text().strip() == "origin"
-	assert "local mode" not in out
+def test_a_recorded_flow_mode_is_never_rewritten_by_launch(tmp_path, monkeypatch, flowMode):
+	# the topic's record is the other mode than the main checkout's (flowMode here: the main record): launch keeps it
+	# and reports it
+	recorded = "origin" if flowMode == "local" else "local"
+	worktree, out = launchTopic(tmp_path, mainRecord=flowMode, topicRecord=recorded)
+	assert (worktree / ".hook-only" / "flow-mode").read_text().strip() == recorded
+	assert ("local mode" in out) == (recorded == "local")
 
 
 def test_the_replay_runs_the_model_over_a_history(tmp_path, home):
@@ -572,7 +680,7 @@ def test_the_replay_runs_the_model_over_a_history(tmp_path, home):
 	assert "subagent rounds  stopped   1 of   4" in result.stdout
 
 
-# dispatch-guard.py: the hook turns the raw estimate into the Budget line (2026-11-02)
+# dispatch-guard.py: the hook turns the raw estimate into the Budget line
 
 def qaRow(est, act):
 	return {"date": "2026-10-31", "topic": "t", "branch": "feature/transform/t", "class": "logic", "agent": "qa",

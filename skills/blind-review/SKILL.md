@@ -1,7 +1,7 @@
 ---
 name: blind-review
 description: Optional true-blind code review - fork a fresh code-reviewer that never sees the plan and is never resumed. Not part of the default feature-flow. Takes no arguments.
-when_to_use: Only when the user explicitly asks for a true blind review. Read ~/.claude/docs/blind-review.md first - in the desktop app (Agent SDK) forks run synchronously and return no agent id, so every round is a new reviewer.
+when_to_use: Only when the user explicitly asks for a true blind review. In the desktop app (Agent SDK) forks run synchronously and return no agent id, so every round is a new reviewer.
 context: fork
 agent: code-reviewer
 disable-model-invocation: true
